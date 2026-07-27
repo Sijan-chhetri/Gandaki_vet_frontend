@@ -1,346 +1,481 @@
-import { useMemo, useState } from "react";
 import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
+import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  ArrowUpRight,
   CalendarDays,
+  CheckCircle2,
   ChevronDown,
   Clock3,
+  CreditCard,
   Download,
-  MapPin,
+  FileText,
+  Package,
   PawPrint,
-  TrendingDown,
-  TrendingUp,
+  RefreshCw,
+  Stethoscope,
   UserRound,
+  Users,
+  WalletCards,
 } from "lucide-react";
 
-const dashboardData = {
-  monthly: {
-    stats: [
-      {
-        title: "Total Patients",
-        value: 3590,
-        percentage: "4.2%",
-        positive: true,
-        color: "success",
-      },
-      {
-        title: "New Appointments",
-        value: 298,
-        percentage: "3.6%",
-        positive: true,
-        color: "success",
-      },
-      {
-        title: "Surgical Procedures",
-        value: 427,
-        percentage: "1.5%",
-        positive: false,
-        color: "warning",
-      },
-      {
-        title: "Overall Visitors",
-        value: 1860,
-        percentage: "2.9%",
-        positive: false,
-        color: "warning",
-      },
-    ],
+import dashboardService from "../../services/dashboard.service";
+import "./Dashboard.css";
 
-    treatments: [
-      {
-        name: "Vaccinations",
-        patients: 378,
-        percentage: "3.1%",
-        positive: true,
-      },
-      {
-        name: "General Check-Up",
-        patients: 255,
-        percentage: "2.2%",
-        positive: true,
-      },
-      {
-        name: "Spay & Neuter Surgery",
-        patients: 164,
-        percentage: "1.6%",
-        positive: true,
-      },
-      {
-        name: "Diagnostics & Lab Tests",
-        patients: 98,
-        percentage: "2.1%",
-        positive: false,
-      },
-    ],
-
-    patientTypes: [
-      {
-        type: "Dogs",
-        total: 365,
-        average: 12,
-        progress: 72,
-        color: "#6f42c1",
-      },
-      {
-        type: "Cats",
-        total: 287,
-        average: 9,
-        progress: 58,
-        color: "#0dcaf0",
-      },
-    ],
-
-    chartData: [
-      { label: "Week 1", value: 68, color: "#20c997" },
-      { label: "Week 2", value: 74, color: "#40e0d0" },
-      { label: "Week 3", value: 52, color: "#5edbe5" },
-      { label: "Week 4", value: 80, color: "#0dcaf0" },
-      { label: "Week 5", value: 92, color: "#6f42c1" },
-    ],
+const EMPTY_DASHBOARD = {
+  filter: {
+    period: "monthly",
+    startDate: null,
+    endDate: null,
   },
 
-  yearly: {
-    stats: [
-      {
-        title: "Total Patients",
-        value: 42880,
-        percentage: "8.4%",
-        positive: true,
-        color: "success",
-      },
-      {
-        title: "New Appointments",
-        value: 3580,
-        percentage: "6.3%",
-        positive: true,
-        color: "success",
-      },
-      {
-        title: "Surgical Procedures",
-        value: 5124,
-        percentage: "2.4%",
-        positive: true,
-        color: "success",
-      },
-      {
-        title: "Overall Visitors",
-        value: 22320,
-        percentage: "3.1%",
-        positive: false,
-        color: "warning",
-      },
-    ],
+  overview: {
+    owners: {
+      total: 0,
+      active: 0,
+    },
 
-    treatments: [
-      {
-        name: "Vaccinations",
-        patients: 4536,
-        percentage: "7.4%",
-        positive: true,
-      },
-      {
-        name: "General Check-Up",
-        patients: 3060,
-        percentage: "5.8%",
-        positive: true,
-      },
-      {
-        name: "Spay & Neuter Surgery",
-        patients: 1968,
-        percentage: "4.2%",
-        positive: true,
-      },
-      {
-        name: "Diagnostics & Lab Tests",
-        patients: 1176,
-        percentage: "1.8%",
-        positive: false,
-      },
-    ],
+    pets: {
+      total: 0,
+      active: 0,
+    },
 
-    patientTypes: [
-      {
-        type: "Dogs",
-        total: 4380,
-        average: 12,
-        progress: 76,
-        color: "#6f42c1",
-      },
-      {
-        type: "Cats",
-        total: 3444,
-        average: 9,
-        progress: 61,
-        color: "#0dcaf0",
-      },
-    ],
+    staff: {
+      total: 0,
+      activeVeterinarians: 0,
+    },
 
-    chartData: [
-      { label: "Jan", value: 50, color: "#20c997" },
-      { label: "Mar", value: 62, color: "#40e0d0" },
-      { label: "May", value: 72, color: "#5edbe5" },
-      { label: "Jul", value: 85, color: "#0dcaf0" },
-      { label: "Sep", value: 68, color: "#6f42c1" },
-      { label: "Nov", value: 92, color: "#fd7e14" },
-    ],
+    appointments: {
+      today: 0,
+      upcoming: 0,
+      periodTotal: 0,
+      completedInPeriod: 0,
+    },
+
+    finance: {
+      invoices: {
+        total: 0,
+        paid: 0,
+        unpaid: 0,
+      },
+
+      payments: {
+        totalTransactions: 0,
+        revenue: 0,
+      },
+    },
+
+    inventory: {
+      lowStockItems: 0,
+      expiringBatches: 0,
+    },
   },
+
+  appointmentStatus: {},
+  recentAppointments: [],
+  recentPayments: [],
 };
 
-const schedules = [
-  {
-    title: "Spay & Neuter Surgery",
-    time: "09:00 AM - 10:30 AM",
-    room: "Surgical Room",
-    duration: "1 hr 30 min",
-    staff: 3,
-    color: "#20c997",
-  },
-  {
-    title: "Dental Treatment",
-    time: "10:00 AM - 11:30 AM",
-    room: "Dental Room",
-    duration: "1 hr 30 min",
-    staff: 2,
-    color: "#6f42c1",
-  },
-];
+const APPOINTMENT_STATUS_LABELS = {
+  SCHEDULED: "Scheduled",
+  CONFIRMED: "Confirmed",
+  CHECKED_IN: "Checked in",
+  IN_PROGRESS: "In progress",
+  COMPLETED: "Completed",
+  CANCELLED: "Cancelled",
+  NO_SHOW: "No show",
+};
+
+const APPOINTMENT_STATUS_CLASSES = {
+  SCHEDULED: "bg-primary-subtle text-primary",
+  CONFIRMED: "bg-info-subtle text-info-emphasis",
+  CHECKED_IN: "bg-warning-subtle text-warning-emphasis",
+  IN_PROGRESS: "bg-secondary-subtle text-secondary-emphasis",
+  COMPLETED: "bg-success-subtle text-success",
+  CANCELLED: "bg-danger-subtle text-danger",
+  NO_SHOW: "bg-dark-subtle text-dark",
+};
+
+const PAYMENT_STATUS_CLASSES = {
+  PAID: "bg-success-subtle text-success",
+  PARTIALLY_PAID:
+    "bg-warning-subtle text-warning-emphasis",
+  ISSUED: "bg-primary-subtle text-primary",
+  OVERDUE: "bg-danger-subtle text-danger",
+  DRAFT: "bg-secondary-subtle text-secondary",
+  VOID: "bg-dark-subtle text-dark",
+};
 
 function getGreeting() {
   const hour = new Date().getHours();
 
-  if (hour < 12) return "Good Morning";
-  if (hour < 17) return "Good Afternoon";
+  if (hour < 12) {
+    return "Good Morning";
+  }
+
+  if (hour < 17) {
+    return "Good Afternoon";
+  }
+
   return "Good Evening";
 }
 
 function formatNumber(value) {
-  return new Intl.NumberFormat("en-US").format(value);
+  return new Intl.NumberFormat("en-GB").format(
+    Number(value || 0),
+  );
 }
 
-function formatDateRange(date, filterType) {
-  if (filterType === "yearly") {
-    return date.getFullYear().toString();
+function formatCurrency(value) {
+  return new Intl.NumberFormat("en-NP", {
+    style: "currency",
+    currency: "NPR",
+    maximumFractionDigits: 2,
+  }).format(Number(value || 0));
+}
+
+function formatDate(value, options = {}) {
+  if (!value) {
+    return "—";
   }
 
-  const firstDay = new Date(
-    date.getFullYear(),
-    date.getMonth(),
-    1
-  );
+  const date = new Date(value);
 
-  const lastDay = new Date(
-    date.getFullYear(),
-    date.getMonth() + 1,
-    0
-  );
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
 
-  const format = {
-    month: "short",
+  return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
+    month: "short",
     year: "numeric",
-  };
-
-  return `${firstDay.toLocaleDateString(
-    "en-US",
-    format
-  )} - ${lastDay.toLocaleDateString("en-US", format)}`;
+    ...options,
+  }).format(date);
 }
 
-function SectionHeader({
+function formatTime(value) {
+  if (!value) {
+    return "—";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date);
+}
+
+function formatDuration(minutes) {
+  const duration = Number(minutes || 0);
+
+  if (!duration) {
+    return "Duration unavailable";
+  }
+
+  if (duration < 60) {
+    return `${duration} min`;
+  }
+
+  const hours = Math.floor(duration / 60);
+  const remainingMinutes = duration % 60;
+
+  if (!remainingMinutes) {
+    return `${hours} hr`;
+  }
+
+  return `${hours} hr ${remainingMinutes} min`;
+}
+
+function formatFullName(person) {
+  if (!person) {
+    return "Unknown";
+  }
+
+  const name = [
+    person.firstName,
+    person.lastName,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
+  return name || "Unknown";
+}
+
+function formatStatus(status) {
+  if (!status) {
+    return "Unknown";
+  }
+
+  return (
+    APPOINTMENT_STATUS_LABELS[status] ||
+    status
+      .toLowerCase()
+      .split("_")
+      .map(
+        (word) =>
+          word.charAt(0).toUpperCase() +
+          word.slice(1),
+      )
+      .join(" ")
+  );
+}
+
+function getMonthApiDate(date) {
+  const year = date.getFullYear();
+
+  const month = String(
+    date.getMonth() + 1,
+  ).padStart(2, "0");
+
+  return `${year}-${month}-01`;
+}
+
+function getYearApiDate(date) {
+  return `${date.getFullYear()}-01-01`;
+}
+
+function getApiDate(date, period) {
+  return period === "yearly"
+    ? getYearApiDate(date)
+    : getMonthApiDate(date);
+}
+
+function formatSelectedPeriod(date, period) {
+  if (period === "yearly") {
+    return String(date.getFullYear());
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    month: "long",
+    year: "numeric",
+  }).format(date);
+}
+
+function getDateInputValue(date, period) {
+  const year = date.getFullYear();
+
+  if (period === "yearly") {
+    return String(year);
+  }
+
+  const month = String(
+    date.getMonth() + 1,
+  ).padStart(2, "0");
+
+  return `${year}-${month}`;
+}
+
+function calculatePercentage(part, total) {
+  const safeTotal = Number(total || 0);
+  const safePart = Number(part || 0);
+
+  if (safeTotal <= 0) {
+    return 0;
+  }
+
+  return Math.min(
+    100,
+    Math.round((safePart / safeTotal) * 100),
+  );
+}
+
+function escapeCsvValue(value) {
+  const text = String(value ?? "");
+
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function MetricCard({
   title,
+  value,
   subtitle,
-  buttonText = "View all",
-  onClick,
+  icon: Icon,
+  tone = "primary",
+  trend,
 }) {
   return (
-    <div className="d-flex justify-content-between align-items-start mb-3">
-      <div>
-        <h5 className="fw-bold mb-1">{title}</h5>
+    <div className="col-sm-6 col-xl-3">
+      <article
+        className={`dashboard-metric-card dashboard-metric-${tone}`}
+      >
+        <div className="dashboard-metric-decoration" />
 
-        {subtitle && (
+        <div className="dashboard-metric-content">
+          <div className="d-flex justify-content-between align-items-start gap-3">
+            <div>
+              <p className="dashboard-metric-title">
+                {title}
+              </p>
+
+              <h2 className="dashboard-metric-value">
+                {value}
+              </h2>
+            </div>
+
+            <div className="dashboard-metric-icon">
+              <Icon size={22} />
+            </div>
+          </div>
+
+          <div className="dashboard-metric-footer">
+            <span>{subtitle}</span>
+
+            {trend && (
+              <span className="dashboard-metric-trend">
+                {trend}
+              </span>
+            )}
+          </div>
+        </div>
+      </article>
+    </div>
+  );
+}
+
+function ProgressItem({
+  label,
+  value,
+  total,
+  className = "bg-primary",
+}) {
+  const percentage = calculatePercentage(
+    value,
+    total,
+  );
+
+  return (
+    <div>
+      <div className="d-flex justify-content-between align-items-center mb-2">
+        <div>
+          <span className="fw-semibold">
+            {label}
+          </span>
+
+          <small className="text-secondary ms-2">
+            {formatNumber(value)}
+          </small>
+        </div>
+
+        <small className="fw-semibold">
+          {percentage}%
+        </small>
+      </div>
+
+      <div
+        className="progress"
+        role="progressbar"
+        aria-valuenow={percentage}
+        aria-valuemin="0"
+        aria-valuemax="100"
+        style={{ height: "8px" }}
+      >
+        <div
+          className={`progress-bar ${className}`}
+          style={{
+            width: `${percentage}%`,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DashboardSectionHeader({
+  icon: Icon,
+  title,
+  subtitle,
+  badge,
+  tone = "primary",
+}) {
+  return (
+    <div className="dashboard-section-header">
+      <div className="d-flex align-items-center gap-3">
+        <div
+          className={`dashboard-section-icon dashboard-section-icon-${tone}`}
+        >
+          <Icon size={19} />
+        </div>
+
+        <div>
+          <h5 className="fw-bold mb-1">
+            {title}
+          </h5>
+
           <small className="text-secondary">
             {subtitle}
           </small>
-        )}
-      </div>
-
-      <button
-        type="button"
-        className="btn btn-sm btn-light border rounded-pill px-3"
-        onClick={onClick}
-      >
-        {buttonText}
-      </button>
-    </div>
-  );
-}
-
-function StatCard({
-  title,
-  value,
-  percentage,
-  positive,
-  color,
-  periodLabel,
-}) {
-  const TrendIcon = positive
-    ? TrendingUp
-    : TrendingDown;
-
-  return (
-    <div className="col-sm-6 col-xl-3">
-      <div className="h-100 px-2 py-2">
-        <small className="text-secondary">
-          {title}
-        </small>
-
-        <h2 className="fw-bold my-2">
-          {formatNumber(value)}
-        </h2>
-
-        <div
-          className={`
-            d-inline-flex align-items-center gap-1
-            rounded-pill px-2 py-1
-            bg-${color}-subtle text-${color}
-          `}
-          style={{ fontSize: "0.75rem" }}
-        >
-          <TrendIcon size={14} />
-
-          <span>
-            {percentage} from previous {periodLabel}
-          </span>
         </div>
       </div>
+
+      {badge !== undefined && (
+        <span className="dashboard-section-badge">
+          {badge}
+        </span>
+      )}
     </div>
   );
 }
 
-function PatientCircle({ value, color }) {
+function LoadingState() {
   return (
     <div
-      className="rounded-circle d-flex align-items-center justify-content-center"
-      style={{
-        width: "60px",
-        height: "60px",
-        background: `conic-gradient(
-          ${color} ${value * 3.6}deg,
-          #e9ecef 0deg
-        )`,
-      }}
+      className="d-flex flex-column align-items-center justify-content-center py-5"
+      style={{ minHeight: "420px" }}
     >
       <div
-        className="bg-white rounded-circle d-flex align-items-center justify-content-center fw-semibold"
+        className="spinner-border text-primary"
+        role="status"
+      >
+        <span className="visually-hidden">
+          Loading dashboard
+        </span>
+      </div>
+
+      <p className="text-secondary mt-3 mb-0">
+        Loading dashboard information...
+      </p>
+    </div>
+  );
+}
+
+function EmptyState({
+  icon: Icon = FileText,
+  title,
+  message,
+}) {
+  return (
+    <div className="text-center py-5">
+      <div
+        className="bg-light border rounded-circle d-inline-flex align-items-center justify-content-center mb-3"
         style={{
-          width: "46px",
-          height: "46px",
-          fontSize: "0.75rem",
+          width: "58px",
+          height: "58px",
         }}
       >
-        {value}%
+        <Icon
+          size={24}
+          className="text-secondary"
+        />
       </div>
+
+      <h6 className="fw-bold">{title}</h6>
+
+      <p className="text-secondary small mb-0">
+        {message}
+      </p>
     </div>
   );
 }
@@ -352,114 +487,419 @@ function Dashboard() {
   const [selectedDate, setSelectedDate] =
     useState(new Date());
 
-  const [openSchedule, setOpenSchedule] =
+  const [dashboard, setDashboard] =
+    useState(EMPTY_DASHBOARD);
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [refreshing, setRefreshing] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+  const [openAppointment, setOpenAppointment] =
     useState(null);
 
-  const currentData = useMemo(
-    () => dashboardData[filterType],
-    [filterType]
-  );
-
-  const dateRange = useMemo(
-    () => formatDateRange(selectedDate, filterType),
-    [selectedDate, filterType]
-  );
-
   const periodLabel =
-    filterType === "monthly" ? "month" : "year";
+    filterType === "monthly"
+      ? "month"
+      : "year";
+
+  const selectedPeriodLabel = useMemo(
+    () =>
+      formatSelectedPeriod(
+        selectedDate,
+        filterType,
+      ),
+    [selectedDate, filterType],
+  );
+
+  const overview =
+    dashboard?.overview ||
+    EMPTY_DASHBOARD.overview;
+
+  const appointments =
+    overview.appointments ||
+    EMPTY_DASHBOARD.overview.appointments;
+
+  const owners =
+    overview.owners ||
+    EMPTY_DASHBOARD.overview.owners;
+
+  const pets =
+    overview.pets ||
+    EMPTY_DASHBOARD.overview.pets;
+
+  const staff =
+    overview.staff ||
+    EMPTY_DASHBOARD.overview.staff;
+
+  const finance =
+    overview.finance ||
+    EMPTY_DASHBOARD.overview.finance;
+
+  const inventory =
+    overview.inventory ||
+    EMPTY_DASHBOARD.overview.inventory;
+
+  const recentAppointments =
+    Array.isArray(
+      dashboard?.recentAppointments,
+    )
+      ? dashboard.recentAppointments
+      : [];
+
+  const recentPayments =
+    Array.isArray(
+      dashboard?.recentPayments,
+    )
+      ? dashboard.recentPayments
+      : [];
+
+  const appointmentStatuses =
+    dashboard?.appointmentStatus &&
+    typeof dashboard.appointmentStatus ===
+      "object"
+      ? dashboard.appointmentStatus
+      : {};
+
+  const loadDashboard = useCallback(
+    async ({ silent = false } = {}) => {
+      try {
+        if (silent) {
+          setRefreshing(true);
+        } else {
+          setLoading(true);
+        }
+
+        setError("");
+
+        const response =
+          await dashboardService.getDashboard({
+            period: filterType,
+            date: getApiDate(
+              selectedDate,
+              filterType,
+            ),
+          });
+
+        const responseData =
+          response?.data &&
+          typeof response.data === "object"
+            ? response.data
+            : response;
+
+        setDashboard({
+          ...EMPTY_DASHBOARD,
+          ...(responseData || {}),
+          overview: {
+            ...EMPTY_DASHBOARD.overview,
+            ...(responseData?.overview || {}),
+            owners: {
+              ...EMPTY_DASHBOARD.overview
+                .owners,
+              ...(responseData?.overview
+                ?.owners || {}),
+            },
+            pets: {
+              ...EMPTY_DASHBOARD.overview.pets,
+              ...(responseData?.overview
+                ?.pets || {}),
+            },
+            staff: {
+              ...EMPTY_DASHBOARD.overview
+                .staff,
+              ...(responseData?.overview
+                ?.staff || {}),
+            },
+            appointments: {
+              ...EMPTY_DASHBOARD.overview
+                .appointments,
+              ...(responseData?.overview
+                ?.appointments || {}),
+            },
+            finance: {
+              ...EMPTY_DASHBOARD.overview
+                .finance,
+              ...(responseData?.overview
+                ?.finance || {}),
+              invoices: {
+                ...EMPTY_DASHBOARD.overview
+                  .finance.invoices,
+                ...(responseData?.overview
+                  ?.finance?.invoices || {}),
+              },
+              payments: {
+                ...EMPTY_DASHBOARD.overview
+                  .finance.payments,
+                ...(responseData?.overview
+                  ?.finance?.payments || {}),
+              },
+            },
+            inventory: {
+              ...EMPTY_DASHBOARD.overview
+                .inventory,
+              ...(responseData?.overview
+                ?.inventory || {}),
+            },
+          },
+          appointmentStatus:
+            responseData?.appointmentStatus ||
+            {},
+          recentAppointments:
+            Array.isArray(
+              responseData?.recentAppointments,
+            )
+              ? responseData.recentAppointments
+              : [],
+          recentPayments:
+            Array.isArray(
+              responseData?.recentPayments,
+            )
+              ? responseData.recentPayments
+              : [],
+        });
+      } catch (requestError) {
+        console.error(
+          "Unable to load dashboard:",
+          requestError,
+        );
+
+        setError(
+          requestError.message ||
+            "Unable to load dashboard information.",
+        );
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [filterType, selectedDate],
+  );
+
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
 
   function changePeriod(direction) {
     setSelectedDate((previousDate) => {
-      const updatedDate = new Date(previousDate);
+      const nextDate = new Date(
+        previousDate,
+      );
 
       if (filterType === "monthly") {
-        updatedDate.setMonth(
-          updatedDate.getMonth() + direction
+        nextDate.setMonth(
+          nextDate.getMonth() + direction,
         );
       } else {
-        updatedDate.setFullYear(
-          updatedDate.getFullYear() + direction
+        nextDate.setFullYear(
+          nextDate.getFullYear() + direction,
         );
       }
 
-      return updatedDate;
+      return nextDate;
     });
   }
 
   function handleFilterChange(event) {
-    setFilterType(event.target.value);
+    const nextFilter = event.target.value;
+
+    setFilterType(nextFilter);
+
+    setSelectedDate((currentDate) => {
+      const nextDate = new Date(currentDate);
+
+      if (nextFilter === "yearly") {
+        nextDate.setMonth(0, 1);
+      }
+
+      return nextDate;
+    });
   }
 
   function handleDateChange(event) {
     const value = event.target.value;
 
-    if (!value) return;
+    if (!value) {
+      return;
+    }
 
     if (filterType === "monthly") {
       const [year, month] = value.split("-");
 
       setSelectedDate(
-        new Date(Number(year), Number(month) - 1, 1)
+        new Date(
+          Number(year),
+          Number(month) - 1,
+          1,
+        ),
       );
-    } else {
-      setSelectedDate(
-        new Date(Number(value), 0, 1)
-      );
+
+      return;
     }
+
+    const year = Number(value);
+
+    if (
+      Number.isNaN(year) ||
+      year < 2000 ||
+      year > 2100
+    ) {
+      return;
+    }
+
+    setSelectedDate(
+      new Date(year, 0, 1),
+    );
   }
 
   function handleExport() {
     const rows = [
       ["Pokhara Pet House Dashboard"],
-      ["Filter", filterType],
-      ["Period", dateRange],
+      ["Period", selectedPeriodLabel],
       [],
-      ["Statistics"],
-      ["Title", "Value", "Percentage", "Trend"],
-      ...currentData.stats.map((stat) => [
-        stat.title,
-        stat.value,
-        stat.percentage,
-        stat.positive ? "Increase" : "Decrease",
+      ["Overview"],
+      ["Metric", "Value"],
+      ["Total owners", owners.total],
+      ["Active owners", owners.active],
+      ["Total pets", pets.total],
+      ["Active pets", pets.active],
+      ["Total staff", staff.total],
+      [
+        "Active veterinarians",
+        staff.activeVeterinarians,
+      ],
+      [
+        "Today's appointments",
+        appointments.today,
+      ],
+      [
+        "Upcoming appointments",
+        appointments.upcoming,
+      ],
+      [
+        "Period appointments",
+        appointments.periodTotal,
+      ],
+      [
+        "Completed appointments",
+        appointments.completedInPeriod,
+      ],
+      [
+        "Total invoices",
+        finance.invoices.total,
+      ],
+      [
+        "Paid invoices",
+        finance.invoices.paid,
+      ],
+      [
+        "Unpaid invoices",
+        finance.invoices.unpaid,
+      ],
+      [
+        "Payment transactions",
+        finance.payments.totalTransactions,
+      ],
+      [
+        "Revenue",
+        finance.payments.revenue,
+      ],
+      [
+        "Low stock items",
+        inventory.lowStockItems,
+      ],
+      [
+        "Expiring batches",
+        inventory.expiringBatches,
+      ],
+      [],
+      ["Appointment Status"],
+      ["Status", "Count"],
+      ...Object.entries(
+        appointmentStatuses,
+      ).map(([status, count]) => [
+        formatStatus(status),
+        count,
       ]),
       [],
-      ["Top Treatments"],
-      ["Treatment", "Patients", "Percentage"],
-      ...currentData.treatments.map((treatment) => [
-        treatment.name,
-        treatment.patients,
-        treatment.percentage,
-      ]),
+      ["Recent Appointments"],
+      [
+        "Appointment number",
+        "Date",
+        "Owner",
+        "Pet",
+        "Veterinarian",
+        "Status",
+      ],
+      ...recentAppointments.map(
+        (appointment) => [
+          appointment.appointmentNo || "",
+          formatDate(
+            appointment.scheduledAt,
+          ),
+          formatFullName(
+            appointment.owner,
+          ),
+          appointment.pet?.name || "",
+          formatFullName(
+            appointment.veterinarian,
+          ),
+          formatStatus(
+            appointment.status,
+          ),
+        ],
+      ),
       [],
-      ["Patients by Type"],
-      ["Type", "Total", "Average per day"],
-      ...currentData.patientTypes.map((patient) => [
-        patient.type,
-        patient.total,
-        patient.average,
-      ]),
+      ["Recent Payments"],
+      [
+        "Payment number",
+        "Invoice number",
+        "Owner",
+        "Method",
+        "Amount",
+        "Paid at",
+      ],
+      ...recentPayments.map(
+        (payment) => [
+          payment.paymentNumber || "",
+          payment.invoice?.invoiceNumber ||
+            "",
+          formatFullName(payment.owner),
+          payment.paymentMethod?.name || "",
+          Number(payment.amount || 0),
+          formatDate(payment.paidAt),
+        ],
+      ),
     ];
 
     const csvContent = rows
       .map((row) =>
-        row
-          .map((value) => {
-            const text = String(value ?? "");
-            return `"${text.replaceAll('"', '""')}"`;
-          })
-          .join(",")
+        row.map(escapeCsvValue).join(","),
       )
       .join("\n");
 
-    const blob = new Blob([csvContent], {
-      type: "text/csv;charset=utf-8;",
-    });
+    const blob = new Blob(
+      [csvContent],
+      {
+        type: "text/csv;charset=utf-8;",
+      },
+    );
 
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
+    const url =
+      URL.createObjectURL(blob);
+
+    const link =
+      document.createElement("a");
 
     link.href = url;
-    link.download = `pokhara-pet-house-${filterType}-${Date.now()}.csv`;
+    link.download =
+      `dashboard-${filterType}-${getApiDate(
+        selectedDate,
+        filterType,
+      )}.csv`;
 
     document.body.appendChild(link);
     link.click();
@@ -468,447 +908,887 @@ function Dashboard() {
     URL.revokeObjectURL(url);
   }
 
-  function getDateInputValue() {
-    const year = selectedDate.getFullYear();
-
-    if (filterType === "yearly") {
-      return year;
-    }
-
-    const month = String(
-      selectedDate.getMonth() + 1
-    ).padStart(2, "0");
-
-    return `${year}-${month}`;
+  if (loading) {
+    return <LoadingState />;
   }
 
   return (
-    <>
-      <div className="d-flex flex-column flex-xl-row justify-content-between align-items-xl-center gap-3 mb-4">
-        <div>
-          <h3 className="fw-bold mb-1">
-            {getGreeting()}
-          </h3>
+    <div className="container-fluid py-3 py-md-4 dashboard-page">
+      <div className="dashboard-hero mb-4">
+        <div className="dashboard-hero-content">
+          <div className="dashboard-welcome">
+            <div className="dashboard-welcome-icon">
+              <Stethoscope size={24} />
+            </div>
 
-          <p className="text-secondary mb-0">
-            Welcome back to Pokhara Pet House. Here is
-            your clinic overview for {dateRange}.
-          </p>
-        </div>
+            <div>
+              <div className="d-flex flex-wrap align-items-center gap-2 mb-1">
+                <h3 className="fw-bold mb-0">
+                  {getGreeting()}
+                </h3>
 
-        <div className="d-flex flex-nowrap align-items-center gap-2">
-          <div className="btn-group flex-shrink-0">
-  <button
-    type="button"
-    className="btn btn-white bg-white border px-2 py-1"
-    onClick={() => changePeriod(-1)}
-  >
-    <ArrowLeft size={15} />
-  </button>
+                <span className="dashboard-live-badge">
+                  <span className="dashboard-live-dot" />
+                  Live dashboard
+                </span>
+              </div>
 
-  <button
-    type="button"
-    className="btn btn-white bg-white border d-flex align-items-center gap-1 px-2 py-1 small"
-    disabled
-    style={{ minWidth: "170px" }}
-  >
-    <CalendarDays size={15} />
-    <span className="text-truncate">{dateRange}</span>
-  </button>
+              <p className="dashboard-subtitle mb-0">
+                Welcome back to Pokhara Pet House.
+                Here is the clinic overview for{" "}
+                <strong>{selectedPeriodLabel}</strong>.
+              </p>
+            </div>
+          </div>
 
-  <button
-    type="button"
-    className="btn btn-white bg-white border px-2 py-1"
-    onClick={() => changePeriod(1)}
-  >
-    <ArrowRight size={15} />
-  </button>
-</div>
+          <div className="dashboard-toolbar">
+            <div className="dashboard-period-navigation">
+              <button
+                type="button"
+                className="dashboard-icon-button"
+                onClick={() => changePeriod(-1)}
+                aria-label={`Previous ${periodLabel}`}
+              >
+                <ArrowLeft size={17} />
+              </button>
 
-          {filterType === "monthly" ? (
-            <input
-              type="month"
-              className="form-control"
-              value={getDateInputValue()}
-              onChange={handleDateChange}
-              style={{ width: "165px" }}
-            />
-          ) : (
-            <input
-              type="number"
-              className="form-control"
-              value={getDateInputValue()}
-              min="2020"
-              max="2100"
-              onChange={handleDateChange}
-              style={{ width: "110px" }}
-              aria-label="Select year"
-            />
-          )}
+              <div className="dashboard-current-period">
+                <CalendarDays size={17} />
+                <span>{selectedPeriodLabel}</span>
+              </div>
 
-          <div className="position-relative">
+              <button
+                type="button"
+                className="dashboard-icon-button"
+                onClick={() => changePeriod(1)}
+                aria-label={`Next ${periodLabel}`}
+              >
+                <ArrowRight size={17} />
+              </button>
+            </div>
+
+            {filterType === "monthly" ? (
+              <input
+                type="month"
+                className="form-control dashboard-date-input"
+                value={getDateInputValue(
+                  selectedDate,
+                  filterType,
+                )}
+                onChange={handleDateChange}
+                aria-label="Select dashboard month"
+              />
+            ) : (
+              <input
+                type="number"
+                className="form-control dashboard-year-input"
+                value={getDateInputValue(
+                  selectedDate,
+                  filterType,
+                )}
+                min="2000"
+                max="2100"
+                onChange={handleDateChange}
+                aria-label="Select dashboard year"
+              />
+            )}
+
             <select
-              className="form-select"
+              className="form-select dashboard-period-select"
               value={filterType}
               onChange={handleFilterChange}
-              style={{ minWidth: "140px" }}
+              aria-label="Dashboard period"
             >
-              <option value="monthly">
-                Monthly
-              </option>
-
-              <option value="yearly">
-                Yearly
-              </option>
+              <option value="monthly">Monthly</option>
+              <option value="yearly">Yearly</option>
             </select>
+
+            <button
+              type="button"
+              className="dashboard-action-button"
+              onClick={() =>
+                loadDashboard({
+                  silent: true,
+                })
+              }
+              disabled={refreshing}
+            >
+              <RefreshCw
+                size={17}
+                className={
+                  refreshing
+                    ? "dashboard-spin"
+                    : ""
+                }
+              />
+              {/* <span>Refresh</span> */}
+            </button>
+
+            <button
+              type="button"
+              className="dashboard-action-button dashboard-export-button"
+              onClick={handleExport}
+            >
+              <Download size={17} />
+              {/* <span>Export</span> */}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div
+          className="alert alert-danger d-flex justify-content-between align-items-center gap-3"
+          role="alert"
+        >
+          <div className="d-flex align-items-center gap-2">
+            <AlertTriangle size={18} />
+
+            <span>{error}</span>
           </div>
 
           <button
             type="button"
-            className="btn btn-light border d-flex align-items-center gap-2"
-            onClick={handleExport}
+            className="btn btn-sm btn-outline-danger"
+            onClick={() =>
+              loadDashboard()
+            }
           >
-            <Download size={17} />
-             
+            Retry
           </button>
+        </div>
+      )}
+
+      <div className="row g-3 mb-4">
+        <MetricCard
+          title="Total Patients"
+          value={formatNumber(pets.total)}
+          subtitle={`${formatNumber(
+            pets.active,
+          )} active patients`}
+          icon={PawPrint}
+          tone="primary"
+        />
+
+        <MetricCard
+          title={`Appointments This ${periodLabel}`}
+          value={formatNumber(
+            appointments.periodTotal,
+          )}
+          subtitle={`${formatNumber(
+            appointments.completedInPeriod,
+          )} completed`}
+          icon={CalendarDays}
+          tone="success"
+        />
+
+        <MetricCard
+          title="Total Revenue"
+          value={formatCurrency(
+            finance.payments.revenue,
+          )}
+          subtitle={`${formatNumber(
+            finance.payments
+              .totalTransactions,
+          )} completed payments`}
+          icon={WalletCards}
+          tone="info"
+        />
+
+        <MetricCard
+          title="Unpaid Invoices"
+          value={formatNumber(
+            finance.invoices.unpaid,
+          )}
+          subtitle={`${formatNumber(
+            finance.invoices.total,
+          )} invoices issued`}
+          icon={FileText}
+          tone={
+            finance.invoices.unpaid > 0
+              ? "warning"
+              : "success"
+          }
+        />
+      </div>
+
+      <div className="row g-4 mb-4">
+        <div className="col-lg-6 col-xl-3">
+          <div className="card dashboard-content-card h-100">
+            <div className="card-body p-4">
+              <div className="d-flex align-items-center justify-content-between">
+                <div>
+                  <small className="text-secondary">
+                    Pet Owners
+                  </small>
+
+                  <h3 className="fw-bold mt-2 mb-0">
+                    {formatNumber(
+                      owners.total,
+                    )}
+                  </h3>
+                </div>
+
+                <div className="dashboard-round-icon bg-primary-subtle text-primary">
+                  <Users size={21} />
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <ProgressItem
+                  label="Active owners"
+                  value={owners.active}
+                  total={owners.total}
+                  className="bg-primary"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-lg-6 col-xl-3">
+          <div className="card dashboard-content-card h-100">
+            <div className="card-body p-4">
+              <div className="d-flex align-items-center justify-content-between">
+                <div>
+                  <small className="text-secondary">
+                    Clinic Staff
+                  </small>
+
+                  <h3 className="fw-bold mt-2 mb-0">
+                    {formatNumber(
+                      staff.total,
+                    )}
+                  </h3>
+                </div>
+
+                <div className="dashboard-round-icon bg-success-subtle text-success">
+                  <UserRound size={21} />
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <ProgressItem
+                  label="Active veterinarians"
+                  value={
+                    staff.activeVeterinarians
+                  }
+                  total={staff.total}
+                  className="bg-success"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-lg-6 col-xl-3">
+          <div className="card dashboard-content-card h-100">
+            <div className="card-body p-4">
+              <div className="d-flex align-items-center justify-content-between">
+                <div>
+                  <small className="text-secondary">
+                    Today's Appointments
+                  </small>
+
+                  <h3 className="fw-bold mt-2 mb-0">
+                    {formatNumber(
+                      appointments.today,
+                    )}
+                  </h3>
+                </div>
+
+                <div className="dashboard-round-icon bg-info-subtle text-info">
+                  <Clock3 size={21} />
+                </div>
+              </div>
+
+              <p className="text-secondary small mt-4 mb-0">
+                {formatNumber(
+                  appointments.upcoming,
+                )}{" "}
+                upcoming appointments
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-lg-6 col-xl-3">
+          <div className="card dashboard-content-card h-100">
+            <div className="card-body p-4">
+              <div className="d-flex align-items-center justify-content-between">
+                <div>
+                  <small className="text-secondary">
+                    Inventory Alerts
+                  </small>
+
+                  <h3 className="fw-bold mt-2 mb-0">
+                    {formatNumber(
+                      inventory.lowStockItems +
+                        inventory.expiringBatches,
+                    )}
+                  </h3>
+                </div>
+
+                <div className="dashboard-round-icon bg-warning-subtle text-warning-emphasis">
+                  <Package size={21} />
+                </div>
+              </div>
+
+              <div className="d-flex flex-column gap-1 mt-4">
+                <small className="text-secondary">
+                  {formatNumber(
+                    inventory.lowStockItems,
+                  )}{" "}
+                  low-stock items
+                </small>
+
+                <small className="text-secondary">
+                  {formatNumber(
+                    inventory.expiringBatches,
+                  )}{" "}
+                  batches expiring within 30
+                  days
+                </small>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <section className="card border-0 shadow-sm rounded-4 mb-4">
-        <div className="card-body p-3 p-md-4">
-          <div className="row g-3">
-            {currentData.stats.map((stat) => (
-              <StatCard
-                key={stat.title}
-                {...stat}
-                periodLabel={periodLabel}
-              />
-            ))}
-          </div>
-        </div>
-      </section>
-
       <div className="row g-4 mb-4">
-        <div className="col-xl-8">
-          <section className="card border-0 shadow-sm rounded-4 h-100">
+        <div className="col-xl-7">
+          <section className="card dashboard-content-card h-100">
             <div className="card-body p-4">
-              <SectionHeader
-                title="Top Treatments"
-                subtitle={`Most requested services for this ${periodLabel}`}
-                onClick={() =>
-                  console.log("Open treatments page")
-                }
-              />
+              <div className="d-flex align-items-center justify-content-between mb-4">
+                <div>
+                  <h5 className="fw-bold mb-1">
+                    Upcoming Appointments
+                  </h5>
 
-              <div className="list-group list-group-flush">
-                {currentData.treatments.map(
-                  (treatment) => (
-                    <div
-                      key={treatment.name}
-                      className="list-group-item px-0 py-3 d-flex justify-content-between align-items-center"
-                    >
-                      <div className="d-flex align-items-center gap-3">
-                        <div
-                          className="rounded-3 bg-success-subtle text-success d-flex align-items-center justify-content-center"
-                          style={{
-                            width: "42px",
-                            height: "42px",
-                          }}
+                  <small className="text-secondary">
+                    The next clinic appointments
+                  </small>
+                </div>
+
+                <span className="badge rounded-pill bg-primary-subtle text-primary">
+                  {recentAppointments.length}{" "}
+                  displayed
+                </span>
+              </div>
+
+              {recentAppointments.length ===
+              0 ? (
+                <EmptyState
+                  icon={CalendarDays}
+                  title="No upcoming appointments"
+                  message="Upcoming appointments will appear here."
+                />
+              ) : (
+                <div className="d-flex flex-column gap-3">
+                  {recentAppointments.map(
+                    (appointment) => {
+                      const isOpen =
+                        openAppointment ===
+                        appointment.id;
+
+                      return (
+                        <article
+                          key={appointment.id}
+                          className={`dashboard-appointment-card ${
+                            isOpen
+                              ? "dashboard-appointment-card-open"
+                              : ""
+                          }`}
                         >
-                          <PawPrint size={18} />
-                        </div>
+                          <div className="d-flex justify-content-between align-items-start gap-3">
+                            <div className="d-flex gap-3">
+                              <div className="dashboard-pet-avatar">
+                                {appointment.pet
+                                  ?.photoUrl ? (
+                                  <img
+                                    src={
+                                      appointment
+                                        .pet
+                                        .photoUrl
+                                    }
+                                    alt={
+                                      appointment
+                                        .pet
+                                        .name ||
+                                      "Pet"
+                                    }
+                                  />
+                                ) : (
+                                  <PawPrint
+                                    size={20}
+                                  />
+                                )}
+                              </div>
 
-                        <div>
-                          <div className="fw-semibold">
-                            {treatment.name}
+                              <div>
+                                <div className="d-flex flex-wrap align-items-center gap-2 mb-1">
+                                  <h6 className="fw-bold mb-0">
+                                    {appointment
+                                      .service
+                                      ?.name ||
+                                      appointment.type ||
+                                      "Veterinary appointment"}
+                                  </h6>
+
+                                  <span
+                                    className={`
+                                      badge rounded-pill
+                                      ${
+                                        APPOINTMENT_STATUS_CLASSES[
+                                          appointment
+                                            .status
+                                        ] ||
+                                        "bg-secondary-subtle text-secondary"
+                                      }
+                                    `}
+                                  >
+                                    {formatStatus(
+                                      appointment.status,
+                                    )}
+                                  </span>
+                                </div>
+
+                                <small className="text-secondary">
+                                  {appointment
+                                    .appointmentNo ||
+                                    "No appointment number"}
+                                </small>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              className="dashboard-expand-button"
+                              onClick={() =>
+                                setOpenAppointment(
+                                  isOpen
+                                    ? null
+                                    : appointment.id,
+                                )
+                              }
+                              aria-expanded={
+                                isOpen
+                              }
+                            >
+                              <ChevronDown
+                                size={17}
+                                style={{
+                                  transform:
+                                    isOpen
+                                      ? "rotate(180deg)"
+                                      : "rotate(0deg)",
+                                  transition:
+                                    "transform 0.2s ease",
+                                }}
+                              />
+                            </button>
                           </div>
 
-                          <small className="text-secondary">
-                            {formatNumber(
-                              treatment.patients
-                            )}{" "}
-                            patients
-                          </small>
-                        </div>
-                      </div>
+                          <div className="row g-2 mt-2">
+                            <div className="col-sm-6">
+                              <small className="text-secondary d-flex align-items-center gap-2">
+                                <CalendarDays
+                                  size={15}
+                                />
 
-                      <span
-                        className={`
-                          badge rounded-pill
-                          d-flex align-items-center gap-1
-                          ${
-                            treatment.positive
-                              ? "bg-success-subtle text-success"
-                              : "bg-warning-subtle text-warning-emphasis"
-                          }
-                        `}
-                      >
-                        {treatment.positive ? (
-                          <TrendingUp size={13} />
-                        ) : (
-                          <TrendingDown size={13} />
-                        )}
+                                {formatDate(
+                                  appointment.scheduledAt,
+                                )}{" "}
+                                at{" "}
+                                {formatTime(
+                                  appointment.scheduledAt,
+                                )}
+                              </small>
+                            </div>
 
-                        {treatment.percentage}
-                      </span>
-                    </div>
-                  )
-                )}
-              </div>
+                            <div className="col-sm-6">
+                              <small className="text-secondary d-flex align-items-center gap-2">
+                                <Clock3
+                                  size={15}
+                                />
+
+                                {formatDuration(
+                                  appointment.durationMin ||
+                                    appointment
+                                      .service
+                                      ?.durationMin,
+                                )}
+                              </small>
+                            </div>
+
+                            <div className="col-sm-6">
+                              <small className="text-secondary d-flex align-items-center gap-2">
+                                <UserRound
+                                  size={15}
+                                />
+
+                                Owner:{" "}
+                                {formatFullName(
+                                  appointment.owner,
+                                )}
+                              </small>
+                            </div>
+
+                            <div className="col-sm-6">
+                              <small className="text-secondary d-flex align-items-center gap-2">
+                                <Stethoscope
+                                  size={15}
+                                />
+
+                                Vet:{" "}
+                                {formatFullName(
+                                  appointment.veterinarian,
+                                )}
+                              </small>
+                            </div>
+                          </div>
+
+                          {isOpen && (
+                            <div className="dashboard-appointment-details">
+                              <div className="row g-3">
+                                <div className="col-md-6">
+                                  <small className="text-secondary d-block">
+                                    Pet
+                                  </small>
+
+                                  <span className="fw-semibold">
+                                    {appointment
+                                      .pet
+                                      ?.name ||
+                                      "Unknown pet"}
+                                  </span>
+
+                                  <small className="text-secondary d-block">
+                                    {appointment
+                                      .pet
+                                      ?.species
+                                      ?.name ||
+                                      "Species not recorded"}
+                                    {appointment
+                                      .pet
+                                      ?.breed
+                                      ?.name
+                                      ? ` · ${appointment.pet.breed.name}`
+                                      : ""}
+                                  </small>
+                                </div>
+
+                                <div className="col-md-6">
+                                  <small className="text-secondary d-block">
+                                    Reason
+                                  </small>
+
+                                  <span className="fw-semibold">
+                                    {appointment.reason ||
+                                      "No reason recorded"}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </article>
+                      );
+                    },
+                  )}
+                </div>
+              )}
             </div>
           </section>
         </div>
 
-        <div className="col-xl-4">
-          <section className="card border-0 shadow-sm rounded-4 h-100">
+        <div className="col-xl-5">
+          <section className="card dashboard-content-card h-100">
             <div className="card-body p-4">
-              <SectionHeader
-                title="Patients by Type"
-                subtitle={`${filterType === "monthly" ? "Monthly" : "Yearly"} distribution`}
-              />
+              <div className="mb-4">
+                <h5 className="fw-bold mb-1">
+                  Appointment Status
+                </h5>
 
-              <div className="d-flex flex-column gap-3">
-                {currentData.patientTypes.map(
-                  (patient) => (
-                    <div
-                      key={patient.type}
-                      className="border rounded-4 p-3 d-flex align-items-center justify-content-between"
-                    >
-                      <div>
-                        <small className="text-secondary">
-                          This {periodLabel}
-                        </small>
-
-                        <h6 className="fw-bold mt-1 mb-1">
-                          {formatNumber(patient.total)}{" "}
-                          {patient.type}
-                        </h6>
-
-                        <small className="text-secondary">
-                          Average: {patient.average} per day
-                        </small>
-                      </div>
-
-                      <PatientCircle
-                        value={patient.progress}
-                        color={patient.color}
-                      />
-                    </div>
-                  )
-                )}
+                <small className="text-secondary">
+                  Status distribution for this{" "}
+                  {periodLabel}
+                </small>
               </div>
+
+              {Object.keys(
+                appointmentStatuses,
+              ).length === 0 ? (
+                <EmptyState
+                  icon={CalendarDays}
+                  title="No appointment statistics"
+                  message="Appointment status counts will appear here."
+                />
+              ) : (
+                <div className="d-flex flex-column gap-4">
+                  {Object.entries(
+                    appointmentStatuses,
+                  ).map(
+                    ([status, count]) => (
+                      <ProgressItem
+                        key={status}
+                        label={formatStatus(
+                          status,
+                        )}
+                        value={count}
+                        total={
+                          appointments.periodTotal
+                        }
+                        className={
+                          status ===
+                          "COMPLETED"
+                            ? "bg-success"
+                            : status ===
+                                "CANCELLED"
+                              ? "bg-danger"
+                              : status ===
+                                  "IN_PROGRESS"
+                                ? "bg-warning"
+                                : "bg-primary"
+                        }
+                      />
+                    ),
+                  )}
+                </div>
+              )}
             </div>
           </section>
         </div>
       </div>
 
       <div className="row g-4">
-        <div className="col-xl-6">
-          <section className="card border-0 shadow-sm rounded-4 h-100">
-            <div className="card-body p-4">
-              <SectionHeader
-                title="Staff Schedule"
-                subtitle="Today's upcoming procedures"
-              />
+        <div className="col-xl-7">
+          <section className="card dashboard-content-card h-100">
+            <div className="card-body p-0">
+              <div className="p-4 border-bottom">
+                <div className="d-flex align-items-center justify-content-between">
+                  <div>
+                    <h5 className="fw-bold mb-1">
+                      Recent Payments
+                    </h5>
 
-              <div className="d-flex flex-column gap-3">
-                {schedules.map((schedule, index) => {
-                  const isOpen =
-                    openSchedule === index;
+                    <small className="text-secondary">
+                      Latest successful clinic
+                      payments
+                    </small>
+                  </div>
 
-                  return (
-                    <article
-                      key={schedule.title}
-                      className="border rounded-4 p-3"
-                      style={{
-                        borderLeft: `4px solid ${schedule.color}`,
-                      }}
-                    >
-                      <div className="d-flex justify-content-between">
-                        <div>
-                          <h6 className="fw-bold mb-1">
-                            {schedule.title}
-                          </h6>
-
-                          <small className="text-secondary">
-                            {schedule.time}
-                          </small>
-                        </div>
-
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-light"
-                          onClick={() =>
-                            setOpenSchedule(
-                              isOpen ? null : index
-                            )
-                          }
-                          aria-expanded={isOpen}
-                        >
-                          <ChevronDown
-                            size={17}
-                            style={{
-                              transform: isOpen
-                                ? "rotate(180deg)"
-                                : "rotate(0deg)",
-                              transition:
-                                "transform 0.2s ease",
-                            }}
-                          />
-                        </button>
-                      </div>
-
-                      <div className="d-flex align-items-center gap-2 my-3">
-                        <span className="badge rounded-circle bg-dark">
-                          A
-                        </span>
-
-                        <span className="badge rounded-circle bg-secondary">
-                          S
-                        </span>
-
-                        <span className="badge rounded-circle bg-primary">
-                          R
-                        </span>
-
-                        <small className="text-secondary d-flex align-items-center gap-1 ms-1">
-                          <UserRound size={14} />
-                          {schedule.staff} staff
-                        </small>
-                      </div>
-
-                      <div className="d-flex flex-column flex-sm-row justify-content-between gap-2">
-                        <small className="text-secondary d-flex align-items-center gap-1">
-                          <MapPin size={14} />
-                          {schedule.room}
-                        </small>
-
-                        <small className="text-secondary d-flex align-items-center gap-1">
-                          <Clock3 size={14} />
-                          {schedule.duration}
-                        </small>
-                      </div>
-
-                      {isOpen && (
-                        <div className="alert alert-light border mt-3 mb-0">
-                          <strong>
-                            Procedure details
-                          </strong>
-
-                          <p className="small text-secondary mb-0 mt-1">
-                            Assigned room:{" "}
-                            {schedule.room}. Expected
-                            duration:{" "}
-                            {schedule.duration}.
-                          </p>
-                        </div>
-                      )}
-                    </article>
-                  );
-                })}
+                  <CreditCard
+                    size={22}
+                    className="text-success"
+                  />
+                </div>
               </div>
+
+              {recentPayments.length === 0 ? (
+                <EmptyState
+                  icon={CreditCard}
+                  title="No recent payments"
+                  message="Completed payments will appear here."
+                />
+              ) : (
+                <div className="table-responsive">
+                  <table className="table align-middle mb-0">
+                    <thead className="table-light">
+                      <tr>
+                        <th className="ps-4">
+                          Payment
+                        </th>
+
+                        <th>Owner</th>
+
+                        <th>Method</th>
+
+                        <th>Status</th>
+
+                        <th className="text-end pe-4">
+                          Amount
+                        </th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {recentPayments.map(
+                        (payment) => (
+                          <tr key={payment.id}>
+                            <td className="ps-4">
+                              <div className="fw-semibold">
+                                {payment.paymentNumber ||
+                                  "Payment"}
+                              </div>
+
+                              <small className="text-secondary">
+                                {payment.invoice
+                                  ?.invoiceNumber ||
+                                  "No invoice"}{" "}
+                                ·{" "}
+                                {formatDate(
+                                  payment.paidAt,
+                                )}
+                              </small>
+                            </td>
+
+                            <td>
+                              <div className="fw-semibold">
+                                {formatFullName(
+                                  payment.owner,
+                                )}
+                              </div>
+
+                              <small className="text-secondary">
+                                {payment.owner
+                                  ?.ownerCode ||
+                                  "—"}
+                              </small>
+                            </td>
+
+                            <td>
+                              {payment
+                                .paymentMethod
+                                ?.name ||
+                                "Unknown"}
+                            </td>
+
+                            <td>
+                              <span
+                                className={`
+                                  badge rounded-pill
+                                  ${
+                                    PAYMENT_STATUS_CLASSES[
+                                      payment
+                                        .invoice
+                                        ?.status
+                                    ] ||
+                                    "bg-secondary-subtle text-secondary"
+                                  }
+                                `}
+                              >
+                                {formatStatus(
+                                  payment
+                                    .invoice
+                                    ?.status,
+                                )}
+                              </span>
+                            </td>
+
+                            <td className="text-end pe-4 fw-bold text-success">
+                              {formatCurrency(
+                                payment.amount,
+                              )}
+                            </td>
+                          </tr>
+                        ),
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </section>
         </div>
 
-        <div className="col-xl-6">
-          <div className="d-flex flex-column gap-4 h-100">
-            <section className="card border-0 shadow-sm rounded-4">
-              <div className="card-body p-4">
-                <SectionHeader
-                  title="Patient Statistics"
-                  subtitle={`${filterType === "monthly" ? "Monthly" : "Yearly"} patient growth`}
+        <div className="col-xl-5">
+          <section className="card dashboard-content-card h-100">
+            <div className="card-body p-4">
+              <div className="mb-4">
+                <h5 className="fw-bold mb-1">
+                  Invoice Summary
+                </h5>
+
+                <small className="text-secondary">
+                  Invoice performance for this{" "}
+                  {periodLabel}
+                </small>
+              </div>
+
+              <div className="d-flex flex-column gap-4">
+                <ProgressItem
+                  label="Paid invoices"
+                  value={
+                    finance.invoices.paid
+                  }
+                  total={
+                    finance.invoices.total
+                  }
+                  className="bg-success"
                 />
 
-                <div
-                  className="d-flex align-items-end justify-content-around gap-2 border-bottom"
-                  style={{ height: "210px" }}
-                >
-                  {currentData.chartData.map(
-                    (item) => (
-                      <div
-                        key={item.label}
-                        className="d-flex flex-column align-items-center justify-content-end h-100 flex-grow-1"
-                      >
-                        <strong
-                          className="small mb-1"
-                          style={{
-                            fontSize: "0.7rem",
-                          }}
-                        >
-                          {item.value}%
-                        </strong>
-
-                        <div
-                          className="rounded-top-3 w-75"
-                          style={{
-                            height: `${item.value}%`,
-                            backgroundColor:
-                              item.color,
-                            minWidth: "28px",
-                            maxWidth: "58px",
-                            transition:
-                              "height 0.3s ease",
-                          }}
-                        />
-
-                        <small className="text-secondary mt-2 mb-2">
-                          {item.label}
-                        </small>
-                      </div>
-                    )
-                  )}
-                </div>
+                <ProgressItem
+                  label="Unpaid invoices"
+                  value={
+                    finance.invoices.unpaid
+                  }
+                  total={
+                    finance.invoices.total
+                  }
+                  className="bg-warning"
+                />
               </div>
-            </section>
 
-            <section
-              className="card border-0 shadow-sm rounded-4 overflow-hidden text-white"
-              style={{
-                background:
-                  "linear-gradient(120deg, #198754, #0dcaf0, #6f42c1)",
-              }}
-            >
-              <div className="card-body p-4">
-                <div className="row align-items-center">
-                  <div className="col-sm-8">
-                    <small className="text-white-50">
-                      Pokhara Pet House
+              <hr className="my-4" />
+
+              <div className="row g-3">
+                <div className="col-6">
+                  <div className="bg-light border rounded-4 p-3 h-100">
+                    <small className="text-secondary">
+                      Total invoices
                     </small>
 
-                    <h4 className="fw-bold mt-2">
-                      Plan, treat, and achieve your
-                      veterinary goals.
+                    <h4 className="fw-bold mb-0 mt-2">
+                      {formatNumber(
+                        finance.invoices
+                          .total,
+                      )}
                     </h4>
-
-                    <p className="text-white-50 mb-0">
-                      Manage patients, staff,
-                      appointments, and clinic
-                      performance from one dashboard.
-                    </p>
                   </div>
+                </div>
 
-                  <div className="col-sm-4 text-sm-end mt-3 mt-sm-0">
-                    <button
-                      type="button"
-                      className="btn btn-light text-primary rounded-pill d-inline-flex align-items-center gap-2"
-                      onClick={() =>
-                        console.log(
-                          "Open goals page"
-                        )
-                      }
-                    >
-                      View Goals
-                      <ArrowUpRight size={17} />
-                    </button>
+                <div className="col-6">
+                  <div className="bg-light border rounded-4 p-3 h-100">
+                    <small className="text-secondary">
+                      Transactions
+                    </small>
+
+                    <h4 className="fw-bold mb-0 mt-2">
+                      {formatNumber(
+                        finance.payments
+                          .totalTransactions,
+                      )}
+                    </h4>
                   </div>
                 </div>
               </div>
-            </section>
-          </div>
+
+              <div className="alert alert-success border-0 mt-4 mb-0">
+                <div className="d-flex gap-2">
+                  <CheckCircle2
+                    size={19}
+                    className="flex-shrink-0 mt-1"
+                  />
+
+                  <div>
+                    <div className="fw-semibold">
+                      Revenue collected
+                    </div>
+
+                    <div className="fs-5 fw-bold">
+                      {formatCurrency(
+                        finance.payments
+                          .revenue,
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
