@@ -1,0 +1,746 @@
+/* =========================================================
+   PRESCRIPTION PAGE — SCREEN LAYOUT
+========================================================= */
+
+.prescription-page {
+  min-height: 100%;
+  padding-bottom: 40px;
+}
+
+/* ==============================
+   Header
+============================== */
+
+.prescription-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+  padding: 20px 22px;
+  border: 1px solid #e7ebef;
+  border-radius: 20px;
+  background: #ffffff;
+  box-shadow:
+    0 12px 30px rgba(31, 41, 55, 0.06);
+}
+
+.prescription-back-button {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ==============================
+   Patient Summary
+============================== */
+
+.prescription-patient-card {
+  display: grid;
+  grid-template-columns:
+    repeat(8, minmax(0, 1fr));
+  margin-bottom: 18px;
+  overflow: hidden;
+  border: 1px solid #e7ebef;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.prescription-patient-card > div {
+  padding: 14px 16px;
+  border-right: 1px solid #edf0f3;
+}
+
+.prescription-patient-card > div:last-child {
+  border-right: 0;
+}
+
+.prescription-patient-card small {
+  display: block;
+  margin-bottom: 4px;
+  color: #7a8490;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.prescription-patient-card strong {
+  display: block;
+  overflow: hidden;
+  font-size: 0.86rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==============================
+   Main Workspace
+============================== */
+
+.prescription-workspace {
+  display: grid;
+  grid-template-columns:
+    220px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+/* ==============================
+   Navigation Tabs
+============================== */
+
+.prescription-tabs {
+  position: sticky;
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #e7ebef;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow:
+    0 10px 26px rgba(31, 41, 55, 0.05);
+}
+
+.prescription-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  border-radius: 11px;
+  color: #5f6873;
+  background: transparent;
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-align: left;
+  transition:
+    color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.prescription-tab:hover {
+  color: #0d6efd;
+  background: #f3f7ff;
+}
+
+.prescription-tab.active {
+  color: #ffffff;
+  background:
+    linear-gradient(
+      135deg,
+      #0d6efd,
+      #3d8bfd
+    );
+  box-shadow:
+    0 8px 18px rgba(13, 110, 253, 0.2);
+}
+
+/* ==============================
+   Main Content Panel
+============================== */
+
+.prescription-panel {
+  min-width: 0;
+}
+
+.prescription-section-card {
+  padding: 22px;
+  border: 1px solid #e7ebef;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow:
+    0 10px 26px rgba(31, 41, 55, 0.05);
+}
+
+/* ==============================
+   Section Headings
+============================== */
+
+.prescription-section-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.prescription-section-heading h5 {
+  margin: 0;
+  font-weight: 800;
+}
+
+.prescription-section-heading p {
+  margin: 4px 0 0;
+  color: #7a8490;
+  font-size: 0.84rem;
+}
+
+.prescription-section-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #0d6efd;
+  background: rgba(13, 110, 253, 0.1);
+}
+
+/* ==============================
+   Repeatable Cards
+============================== */
+
+.prescription-repeat-card {
+  padding: 17px;
+  border: 1px solid #e5eaf0;
+  border-radius: 15px;
+  background: #fafbfd;
+}
+
+.prescription-repeat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 15px;
+}
+
+/* ==============================
+   Empty State
+============================== */
+
+.prescription-empty {
+  padding: 34px;
+  border: 1px dashed #cfd7e2;
+  border-radius: 14px;
+  color: #7a8490;
+  background: #fafbfd;
+  text-align: center;
+}
+
+/* ==============================
+   Loading State
+============================== */
+
+.prescription-loading {
+  min-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #6c757d;
+}
+
+.prescription-spin {
+  animation:
+    prescription-spin 0.8s linear infinite;
+}
+
+@keyframes prescription-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ==============================
+   Blood Report Table
+============================== */
+
+.blood-report-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e5eaf0;
+  border-radius: 14px;
+}
+
+.blood-report-table {
+  min-width: 760px;
+  margin: 0;
+}
+
+.blood-report-table th {
+  padding: 12px;
+  color: #667085;
+  background: #f7f9fc;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.blood-report-table td {
+  padding: 8px;
+  vertical-align: middle;
+}
+
+.blood-flag-low {
+  color: #0d6efd !important;
+  background: #eef5ff !important;
+}
+
+.blood-flag-normal {
+  color: #198754 !important;
+  background: #edf9f2 !important;
+}
+
+.blood-flag-high,
+.blood-flag-critical {
+  color: #dc3545 !important;
+  background: #fff0f1 !important;
+}
+
+/* ==============================
+   Print Version Hidden on Screen
+============================== */
+
+.print-prescription {
+  display: none;
+}
+
+/* =========================================================
+   RESPONSIVE LAYOUT
+========================================================= */
+
+/* ==============================
+   Large Tablets
+============================== */
+
+@media (max-width: 1199.98px) {
+  .prescription-patient-card {
+    grid-template-columns:
+      repeat(4, minmax(0, 1fr));
+  }
+
+  .prescription-patient-card > div:nth-child(4n) {
+    border-right: 0;
+  }
+}
+
+/* ==============================
+   Tablets
+============================== */
+
+@media (max-width: 991.98px) {
+  .prescription-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .prescription-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .prescription-tabs {
+    position: static;
+    display: grid;
+    grid-template-columns:
+      repeat(4, minmax(0, 1fr));
+  }
+
+  .prescription-tab {
+    justify-content: center;
+    text-align: center;
+  }
+}
+
+/* ==============================
+   Mobile
+============================== */
+
+@media (max-width: 767.98px) {
+  .prescription-header {
+    padding: 16px;
+  }
+
+  .prescription-header-actions {
+    width: 100%;
+  }
+
+  .prescription-header-actions .btn {
+    flex: 1;
+  }
+
+  .prescription-patient-card {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+  }
+
+  .prescription-patient-card > div:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .prescription-tabs {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+  }
+
+  .prescription-section-card {
+    padding: 16px;
+  }
+}
+
+/* =========================================================
+   PRINT / PDF SETTINGS
+========================================================= */
+
+@page {
+  size: A4;
+  margin:
+    12mm
+    11mm
+    14mm;
+}
+
+.page-number::after {
+  content: counter(page);
+}
+
+@media print {
+  /* ==============================
+     Base Print Reset
+  ============================== */
+
+  html,
+  body {
+    background: #ffffff !important;
+  }
+
+  .screen-only,
+  .app-sidebar,
+  header:not(.print-letterhead),
+  nav,
+  .modal-backdrop {
+    display: none !important;
+  }
+
+  .main-content-wrapper,
+  .main-content {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .prescription-page {
+    padding: 0 !important;
+  }
+
+  .print-prescription {
+    display: block !important;
+    color: #1f2937;
+    font-family:
+      Arial,
+      Helvetica,
+      sans-serif;
+    font-size: 9.5pt;
+    line-height: 1.35;
+  }
+
+  /* ==============================
+     Letterhead
+  ============================== */
+
+  .print-letterhead {
+    display: grid;
+    grid-template-columns:
+      52px 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding-bottom: 10px;
+    border-bottom: 3px solid #176b4d;
+  }
+
+  .print-logo {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    background: #176b4d;
+  }
+
+  .print-clinic-main h1 {
+    margin: 0;
+    color: #176b4d;
+    font-size: 22pt;
+    letter-spacing: 0.2px;
+  }
+
+  .print-clinic-main p {
+    margin: 1px 0;
+    font-size: 10pt;
+    font-weight: 700;
+  }
+
+  .print-clinic-main small {
+    color: #5c6670;
+  }
+
+  .print-clinic-contact {
+    text-align: right;
+    font-size: 8.5pt;
+    line-height: 1.45;
+  }
+
+  /* ==============================
+     Prescription Title
+  ============================== */
+
+  .print-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 10px 0 8px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    background: #eef7f3;
+  }
+
+  .print-title-row h2 {
+    margin: 0;
+    color: #174f3c;
+    font-size: 13pt;
+  }
+
+  .print-title-row span {
+    color: #5c6670;
+    font-size: 8.5pt;
+  }
+
+  .print-rx {
+    color: #176b4d;
+    font-family:
+      Georgia,
+      serif;
+    font-size: 28pt;
+    font-weight: 700;
+  }
+
+  /* ==============================
+     Patient Information Grid
+  ============================== */
+
+  .print-info-grid {
+    display: grid;
+    grid-template-columns:
+      repeat(5, 1fr);
+    overflow: hidden;
+    border: 1px solid #cfd8d3;
+    border-radius: 6px;
+  }
+
+  .print-info {
+    padding: 5px 7px;
+    border-right: 1px solid #dfe6e2;
+    border-bottom: 1px solid #dfe6e2;
+  }
+
+  .print-info:nth-child(5n) {
+    border-right: 0;
+  }
+
+  .print-info small {
+    display: block;
+    color: #6b7280;
+    font-size: 7pt;
+    text-transform: uppercase;
+  }
+
+  .print-info strong {
+    display: block;
+    margin-top: 1px;
+    font-size: 8.5pt;
+  }
+
+  /* ==============================
+     Printed Sections
+  ============================== */
+
+  .print-section {
+    margin-top: 9px;
+    break-inside: avoid;
+  }
+
+  .print-section h3 {
+    margin: 0 0 5px;
+    padding: 4px 7px;
+    border-left: 4px solid #176b4d;
+    color: #174f3c;
+    background: #f2f7f5;
+    font-size: 10pt;
+    text-transform: uppercase;
+  }
+
+  .print-line {
+    display: grid;
+    grid-template-columns:
+      135px 1fr;
+    gap: 7px;
+    padding: 3px 2px;
+    border-bottom: 1px dotted #d6ddd9;
+  }
+
+  .print-line strong {
+    font-size: 8.5pt;
+  }
+
+  .print-line span {
+    white-space: pre-wrap;
+  }
+
+  /* ==============================
+     Vitals and Report Metadata
+  ============================== */
+
+  .print-vitals,
+  .print-report-meta {
+    display: grid;
+    margin: 4px 0;
+    border: 1px solid #d8e0dc;
+  }
+
+  .print-vitals {
+    grid-template-columns:
+      repeat(6, 1fr);
+  }
+
+  .print-report-meta {
+    grid-template-columns:
+      repeat(4, 1fr);
+  }
+
+  .print-vitals .print-info,
+  .print-report-meta .print-info {
+    border-bottom: 0;
+  }
+
+  /* ==============================
+     Printed Tables
+  ============================== */
+
+  .print-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8pt;
+  }
+
+  .print-table th {
+    padding: 5px;
+    border: 1px solid #bfcac4;
+    color: #ffffff;
+    background: #176b4d;
+    text-align: left;
+  }
+
+  .print-table td {
+    padding: 4px 5px;
+    border: 1px solid #cfd8d3;
+    vertical-align: top;
+  }
+
+  .print-table tbody tr:nth-child(even) {
+    background: #f7faf8;
+  }
+
+  .print-table.compact {
+    font-size: 7.8pt;
+  }
+
+  /* ==============================
+     Blood Report Flags
+  ============================== */
+
+  .print-flag {
+    font-weight: 700;
+  }
+
+  .print-flag-low {
+    color: #0d6efd;
+  }
+
+  .print-flag-normal {
+    color: #198754;
+  }
+
+  .print-flag-high,
+  .print-flag-critical {
+    color: #dc3545;
+  }
+
+  /* ==============================
+     Printed Lists
+  ============================== */
+
+  .print-list {
+    margin: 4px 0;
+    padding-left: 20px;
+  }
+
+  .print-list li {
+    margin-bottom: 3px;
+  }
+
+  /* ==============================
+     Signatures
+  ============================== */
+
+  .print-signatures {
+    display: grid;
+    grid-template-columns:
+      repeat(3, 1fr);
+    gap: 28px;
+    margin-top: 28px;
+    text-align: center;
+    break-inside: avoid;
+  }
+
+  .signature-line {
+    height: 20px;
+    border-bottom: 1px solid #555555;
+  }
+
+  .print-signatures strong,
+  .print-signatures small {
+    display: block;
+  }
+
+  .print-signatures small {
+    margin-top: 2px;
+    color: #6b7280;
+    font-size: 7.5pt;
+  }
+
+  /* ==============================
+     Footer
+  ============================== */
+
+  .print-footer {
+    position: fixed;
+    right: 0;
+    bottom: -8mm;
+    left: 0;
+    display: flex;
+    justify-content: space-between;
+    padding-top: 4px;
+    border-top: 1px solid #176b4d;
+    color: #667085;
+    font-size: 7pt;
+  }
+
+  /* ==============================
+     Page Break Control
+  ============================== */
+
+  .print-section,
+  .print-table,
+  tr,
+  td,
+  th {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+}

@@ -4,6 +4,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   AlertCircle,
   CalendarDays,
@@ -13,6 +14,7 @@ import {
   Edit3,
   Eye,
   Filter,
+  FileText,
   LoaderCircle,
   PawPrint,
   Plus,
@@ -102,7 +104,39 @@ function extractArray(result, keys = []) {
   );
 }
 
+function getStoredUser() {
+  const candidates = [
+    localStorage.getItem("user"),
+    localStorage.getItem("authUser"),
+    localStorage.getItem("currentUser"),
+  ];
+
+  for (const value of candidates) {
+    if (!value) continue;
+
+    try {
+      const parsed = JSON.parse(value);
+      return parsed?.user || parsed?.data || parsed;
+    } catch {
+      // Ignore malformed storage values.
+    }
+  }
+
+  return null;
+}
+
+function normaliseRole(role) {
+  return String(role || "")
+    .trim()
+    .toUpperCase();
+}
+
 function Appointments() {
+  const navigate = useNavigate();
+  const currentUser = useMemo(() => getStoredUser(), []);
+  const currentRole = normaliseRole(currentUser?.role);
+  const isDoctor = ["DOCTOR", "VETERINARIAN", "VET"].includes(currentRole);
+
   const [appointments, setAppointments] =
     useState([]);
   const [patients, setPatients] = useState([]);
@@ -176,13 +210,27 @@ function Appointments() {
           query.dateTo = `${appliedFilters.date}T23:59:59.999`;
         }
 
+        if (isDoctor && currentUser?.id) {
+          query.veterinarianId = currentUser.id;
+        }
+
         const result =
           await appointmentService.getAppointments(
             query,
           );
 
+        const receivedAppointments = extractArray(result, [
+          "appointments",
+        ]);
+
         setAppointments(
-          extractArray(result, ["appointments"]),
+          isDoctor && currentUser?.id
+            ? receivedAppointments.filter(
+                (appointment) =>
+                  appointment.veterinarianId === currentUser.id ||
+                  appointment.veterinarian?.id === currentUser.id,
+              )
+            : receivedAppointments,
         );
 
         setPagination({
@@ -204,6 +252,8 @@ function Appointments() {
     [
       appliedFilters,
       pagination.limit,
+      isDoctor,
+      currentUser?.id,
     ],
   );
 
@@ -686,6 +736,12 @@ function Appointments() {
     }
   }
 
+  function openPrescription(appointment) {
+    navigate(`/prescriptions/new/${appointment.id}`, {
+      state: { appointment },
+    });
+  }
+
   function exportVisibleAppointments() {
     const rows = [
       [
@@ -752,12 +808,13 @@ function Appointments() {
       <div className="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3 mb-4">
         <div>
           <h3 className="fw-bold mb-1">
-            Appointments
+            {isDoctor ? "My Appointments" : "Appointments"}
           </h3>
 
           <p className="text-secondary mb-0">
-            Schedule consultations, assign
-            veterinarians and manage clinic visits.
+            {isDoctor
+              ? "View your assigned patients, manage visits and create prescriptions."
+              : "Schedule consultations, assign veterinarians and manage clinic visits."}
           </p>
         </div>
 
@@ -1117,6 +1174,22 @@ function Appointments() {
                               <Eye size={16} />
                             </button>
 
+                            {isDoctor && (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-success d-flex align-items-center gap-1"
+                                title="Create prescription"
+                                onClick={() =>
+                                  openPrescription(appointment)
+                                }
+                              >
+                                <FileText size={16} />
+                                <span className="d-none d-xxl-inline">
+                                  Prescription
+                                </span>
+                              </button>
+                            )}
+
                             <button
                               type="button"
                               className="btn btn-sm btn-light border"
@@ -1213,6 +1286,10 @@ function Appointments() {
             cancelAppointment(
               selectedAppointment,
             )
+          }
+          canPrescribe={isDoctor}
+          onPrescription={() =>
+            openPrescription(selectedAppointment)
           }
         />
       )}
@@ -1497,6 +1574,8 @@ function AppointmentDetailsModal({
   onEdit,
   onStatusChange,
   onCancel,
+  canPrescribe,
+  onPrescription,
 }) {
   const actions = getAvailableActions(
     appointment?.status,
@@ -1675,6 +1754,17 @@ function AppointmentDetailsModal({
         >
           Close
         </button>
+
+        {appointment && canPrescribe && (
+          <button
+            type="button"
+            className="btn btn-success d-flex align-items-center gap-2"
+            onClick={onPrescription}
+          >
+            <FileText size={16} />
+            Prescription
+          </button>
+        )}
 
         {appointment &&
           ![

@@ -21,6 +21,7 @@ import Settings from "./components/setting/Settings";
 import CustomerSupport from "./components/customerSupport/CustomerSupport";
 import Services from "./components/services/Services";
 import Unauthorized from "./components/common/Unauthorized";
+import PrescriptionForm from "./components/prescriptions/PrescriptionForm"
 
 import Login from "./auth/Login";
 
@@ -212,6 +213,25 @@ function App() {
               element={<Appointments />}
             />
           </Route>
+
+
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={
+                   ROLES.VETERINARIAN
+                }
+              />
+            }
+          >
+           <Route
+            path="prescriptions/new/:appointmentId"
+            element={<PrescriptionForm />}
+          />
+          </Route>
+
+         
 
           {/* Services */}
 
