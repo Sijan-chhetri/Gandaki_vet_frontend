@@ -109,7 +109,7 @@ const clinicItems = [
     roles: [
       ROLES.SUPER_ADMIN,
       ROLES.ADMIN,
-      ROLES.VETERINARIAN,
+      // ROLES.VETERINARIAN,
       ROLES.VET_ASSISTANT,
       ROLES.RECEPTIONIST,
       ROLES.CASHIER,
