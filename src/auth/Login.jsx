@@ -164,7 +164,7 @@ export default function Login() {
 
                 <span>
                   <span className="d-block fw-bold fs-5">
-                    Pokhara Pet House
+                    Pokhara Pet Hospital
                   </span>
                   <small className="text-secondary">
                     Veterinary Clinic
@@ -227,7 +227,7 @@ export default function Login() {
 
                   <span>
                     <span className="d-block fw-bold">
-                      Pokhara Pet House
+                      Pokhara Pet Hospital
                     </span>
                     <small className="text-secondary">
                       Veterinary Clinic

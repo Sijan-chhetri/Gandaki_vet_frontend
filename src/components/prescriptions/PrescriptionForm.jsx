@@ -27,7 +27,7 @@ import prescriptionService from "../../services/prescription.service";
 import "./PrescriptionForm.css";
 
 const CLINIC = {
-  name: "Pokhara Pet House",
+  name: "Pokhara Pet Hospital",
   subtitle: "Veterinary Clinic & Pet Care Centre",
   address: "Pokhara, Kaski, Nepal",
   phone: "+977-XXXXXXXXXX",

@@ -465,7 +465,7 @@ function Sidebar({
 
             <div>
               <h5 className="mb-0 fw-bold">
-                Pokhara Pet House
+                Pokhara Pet Hospital
               </h5>
 
               <small className="text-secondary">

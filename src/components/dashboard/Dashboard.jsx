@@ -757,7 +757,7 @@ function Dashboard() {
 
   function handleExport() {
     const rows = [
-      ["Pokhara Pet House Dashboard"],
+      ["Pokhara Pet Hospital Dashboard"],
       ["Period", selectedPeriodLabel],
       [],
       ["Overview"],

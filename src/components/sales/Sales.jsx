@@ -734,7 +734,7 @@ useEffect(() => {
             null,
           notes:
             retailForm.notes.trim() ||
-            "Retail inventory sale from Pokhara Pet House",
+            "Retail inventory sale from Pokhara Pet Hospital",
           discountAmount:
             Number(
               retailForm.discountAmount ||
@@ -1049,7 +1049,7 @@ useEffect(() => {
 
     const clinicName =
       invoice.clinic?.name ||
-      "Pokhara Pet House";
+      "Pokhara Pet Hospital";
 
     document.setFontSize(20);
     document.setFont(
@@ -1882,7 +1882,7 @@ useEffect(() => {
           <p className="text-secondary mb-0">
             Create appointment bills and
             retail inventory invoices for
-            Pokhara Pet House.
+            Pokhara Pet Hospital.
           </p>
         </div>
 
@@ -2393,7 +2393,7 @@ useEffect(() => {
           >
             <div className="alert alert-primary border-0">
               <strong>
-                Pokhara Pet House
+                Pokhara Pet Hospital
               </strong>{" "}
               will appear as the seller on
               the printed invoice.
@@ -5015,7 +5015,7 @@ function buildPrintHtml(
 ) {
   const clinicName =
     invoice.clinic?.name ||
-    "Pokhara Pet House";
+    "Pokhara Pet Hospital";
 
   const rows = (invoice.items || [])
     .map(
