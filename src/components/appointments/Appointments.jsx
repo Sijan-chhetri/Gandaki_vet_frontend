@@ -53,6 +53,7 @@ const APPOINTMENT_STATUSES = [
 ];
 
 const initialFormData = {
+  mode: "SCHEDULED",
   ownerId: "",
   petId: "",
   veterinarianId: "",
@@ -61,6 +62,15 @@ const initialFormData = {
   scheduledDate: "",
   scheduledTime: "09:00",
   durationMin: "30",
+  walkInOwnerName: "",
+  walkInOwnerPhone: "",
+  walkInOwnerAddress: "",
+  walkInPetName: "",
+  walkInPetSpecies: "",
+  walkInPetBreed: "",
+  walkInPetGender: "",
+  walkInPetAge: "",
+  walkInPetWeight: "",
   reason: "",
   symptoms: "",
   notes: "",
@@ -383,6 +393,26 @@ function Appointments() {
       return {
         ...previous,
         [name]: value,
+        ...(name === "mode"
+          ? value === "WALK_IN"
+            ? {
+                ownerId: "",
+                petId: "",
+                scheduledDate: "",
+                scheduledTime: "",
+              }
+            : {
+                walkInOwnerName: "",
+                walkInOwnerPhone: "",
+                walkInOwnerAddress: "",
+                walkInPetName: "",
+                walkInPetSpecies: "",
+                walkInPetBreed: "",
+                walkInPetGender: "",
+                walkInPetAge: "",
+                walkInPetWeight: "",
+              }
+          : {}),
         ...(name === "petId"
           ? {
               ownerId:
@@ -430,6 +460,7 @@ function Appointments() {
 
     setEditingAppointment(appointment);
     setFormData({
+      mode: appointment.mode || "SCHEDULED",
       ownerId: appointment.ownerId || "",
       petId: appointment.petId || "",
       veterinarianId:
@@ -446,6 +477,27 @@ function Appointments() {
       durationMin: String(
         appointment.durationMin || 30,
       ),
+      walkInOwnerName:
+        appointment.walkInOwnerName || "",
+      walkInOwnerPhone:
+        appointment.walkInOwnerPhone || "",
+      walkInOwnerAddress:
+        appointment.walkInOwnerAddress || "",
+      walkInPetName:
+        appointment.walkInPetName || "",
+      walkInPetSpecies:
+        appointment.walkInPetSpecies || "",
+      walkInPetBreed:
+        appointment.walkInPetBreed || "",
+      walkInPetGender:
+        appointment.walkInPetGender || "",
+      walkInPetAge:
+        appointment.walkInPetAge || "",
+      walkInPetWeight:
+        appointment.walkInPetWeight !== null &&
+        appointment.walkInPetWeight !== undefined
+          ? String(appointment.walkInPetWeight)
+          : "",
       reason: appointment.reason || "",
       symptoms: appointment.symptoms || "",
       notes: appointment.notes || "",
@@ -468,27 +520,61 @@ function Appointments() {
 
   function validateForm() {
     const errors = {};
+    const isWalkIn = formData.mode === "WALK_IN";
 
-    if (!formData.petId) {
-      errors.petId = "Please select a patient.";
-    }
+    if (isWalkIn) {
+      if (!formData.walkInOwnerName.trim()) {
+        errors.walkInOwnerName =
+          "Walk-in owner name is required.";
+      }
 
-    if (!formData.ownerId) {
-      errors.ownerId =
-        "The selected patient has no owner.";
+      if (!formData.walkInOwnerPhone.trim()) {
+        errors.walkInOwnerPhone =
+          "Walk-in owner phone is required.";
+      }
+
+      if (!formData.walkInPetName.trim()) {
+        errors.walkInPetName =
+          "Walk-in pet name is required.";
+      }
+
+      if (!formData.walkInPetSpecies.trim()) {
+        errors.walkInPetSpecies =
+          "Walk-in pet species is required.";
+      }
+
+      if (
+        formData.walkInPetWeight &&
+        (!Number.isFinite(
+          Number(formData.walkInPetWeight),
+        ) ||
+          Number(formData.walkInPetWeight) <= 0)
+      ) {
+        errors.walkInPetWeight =
+          "Pet weight must be greater than zero.";
+      }
+    } else {
+      if (!formData.petId) {
+        errors.petId = "Please select a patient.";
+      }
+
+      if (!formData.ownerId) {
+        errors.ownerId =
+          "The selected patient has no owner.";
+      }
+
+      if (
+        !formData.scheduledDate ||
+        !formData.scheduledTime
+      ) {
+        errors.scheduledAt =
+          "Appointment date and time are required.";
+      }
     }
 
     if (!formData.type) {
       errors.type =
         "Appointment type is required.";
-    }
-
-    if (
-      !formData.scheduledDate ||
-      !formData.scheduledTime
-    ) {
-      errors.scheduledAt =
-        "Appointment date and time are required.";
     }
 
     const duration = Number(
@@ -508,18 +594,14 @@ function Appointments() {
   }
 
   function createPayload() {
-    const scheduledAt = new Date(
-      `${formData.scheduledDate}T${formData.scheduledTime}:00`,
-    );
+    const isWalkIn = formData.mode === "WALK_IN";
 
-    return {
-      ownerId: formData.ownerId,
-      petId: formData.petId,
+    const commonPayload = {
+      mode: formData.mode,
       veterinarianId:
         formData.veterinarianId || null,
       serviceId: formData.serviceId || null,
       type: formData.type,
-      scheduledAt: scheduledAt.toISOString(),
       durationMin: Number(
         formData.durationMin,
       ),
@@ -527,6 +609,54 @@ function Appointments() {
       symptoms:
         formData.symptoms.trim() || null,
       notes: formData.notes.trim() || null,
+    };
+
+    if (isWalkIn) {
+      return {
+        ...commonPayload,
+        ownerId: null,
+        petId: null,
+        walkInOwnerName:
+          formData.walkInOwnerName.trim(),
+        walkInOwnerPhone:
+          formData.walkInOwnerPhone.trim(),
+        walkInOwnerAddress:
+          formData.walkInOwnerAddress.trim() || null,
+        walkInPetName:
+          formData.walkInPetName.trim(),
+        walkInPetSpecies:
+          formData.walkInPetSpecies.trim(),
+        walkInPetBreed:
+          formData.walkInPetBreed.trim() || null,
+        walkInPetGender:
+          formData.walkInPetGender || null,
+        walkInPetAge:
+          formData.walkInPetAge.trim() || null,
+        walkInPetWeight:
+          formData.walkInPetWeight !== ""
+            ? Number(formData.walkInPetWeight)
+            : null,
+      };
+    }
+
+    const scheduledAt = new Date(
+      `${formData.scheduledDate}T${formData.scheduledTime}:00`,
+    );
+
+    return {
+      ...commonPayload,
+      ownerId: formData.ownerId,
+      petId: formData.petId,
+      scheduledAt: scheduledAt.toISOString(),
+      walkInOwnerName: null,
+      walkInOwnerPhone: null,
+      walkInOwnerAddress: null,
+      walkInPetName: null,
+      walkInPetSpecies: null,
+      walkInPetBreed: null,
+      walkInPetGender: null,
+      walkInPetAge: null,
+      walkInPetWeight: null,
     };
   }
 
@@ -759,9 +889,9 @@ function Appointments() {
       ...appointments.map((appointment) => [
         appointment.appointmentNo,
         appointment.scheduledAt,
-        appointment.pet?.name || "",
-        getOwnerName(appointment.owner),
-        appointment.owner?.phone || "",
+        appointment.pet?.name || appointment.walkInPetName || "",
+        getOwnerName(appointment.owner) || appointment.walkInOwnerName || "",
+        appointment.owner?.phone || appointment.walkInOwnerPhone || "",
         appointment.type,
         appointment.service?.name || "",
         getUserName(
@@ -1103,12 +1233,14 @@ function Appointments() {
                             <div>
                               <div className="fw-semibold small">
                                 {appointment.pet?.name ||
+                                  appointment.walkInPetName ||
                                   "—"}
                               </div>
 
                               <small className="text-secondary">
                                 {appointment.pet
                                   ?.species?.name ||
+                                  appointment.walkInPetSpecies ||
                                   "—"}
                               </small>
                             </div>
@@ -1119,11 +1251,14 @@ function Appointments() {
                           <div className="small fw-semibold">
                             {getOwnerName(
                               appointment.owner,
-                            )}
+                            ) ||
+                              appointment.walkInOwnerName ||
+                              "—"}
                           </div>
 
                           <small className="text-secondary">
                             {appointment.owner?.phone ||
+                              appointment.walkInOwnerPhone ||
                               "—"}
                           </small>
                         </td>
@@ -1323,6 +1458,8 @@ function AppointmentFormModal({
   onSubmit,
   onClose,
 }) {
+  const isWalkIn = formData.mode === "WALK_IN";
+
   return (
     <ModalShell
       title={
@@ -1330,7 +1467,7 @@ function AppointmentFormModal({
           ? "Edit Appointment"
           : "Schedule Appointment"
       }
-      subtitle="Select the patient, appointment type, veterinarian and time."
+      subtitle="Create a registered or walk-in appointment from the same form."
       onClose={onClose}
       size="modal-xl"
     >
@@ -1345,53 +1482,177 @@ function AppointmentFormModal({
             </div>
           )}
 
-          <FormSection title="Patient and owner">
+          <FormSection title="Appointment mode">
             <div className="row g-3">
               <FormSelect
-                label="Patient"
-                name="petId"
-                value={formData.petId}
+                label="Customer type"
+                name="mode"
+                value={formData.mode}
                 onChange={onChange}
-                error={fieldErrors.petId}
                 required
                 col="col-md-6"
               >
-                <option value="">
-                  Select patient
+                <option value="SCHEDULED">
+                  Registered customer
                 </option>
-
-                {patients.map((patient) => (
-                  <option
-                    key={patient.id}
-                    value={patient.id}
-                  >
-                    {patient.name} —{" "}
-                    {patient.species?.name ||
-                      "Unknown species"} —{" "}
-                    {getOwnerName(patient.owner)}
-                  </option>
-                ))}
+                <option value="WALK_IN">
+                  Walk-in customer
+                </option>
               </FormSelect>
 
-              <FormInput
-                label="Owner"
-                value={getOwnerName(
-                  selectedPatient?.owner,
-                )}
-                readOnly
-                col="col-md-3"
-              />
-
-              <FormInput
-                label="Phone"
-                value={
-                  selectedPatient?.owner?.phone || ""
-                }
-                readOnly
-                col="col-md-3"
-              />
+              <div className="col-md-6 d-flex align-items-end">
+                <div className="alert alert-light border mb-0 w-100 py-2">
+                  {isWalkIn
+                    ? "Walk-in appointments are checked in immediately using the current date and time."
+                    : "Select an existing registered patient and appointment schedule."}
+                </div>
+              </div>
             </div>
           </FormSection>
+
+          {isWalkIn ? (
+            <FormSection title="Walk-in customer and pet">
+              <div className="row g-3">
+                <FormInput
+                  label="Owner name"
+                  name="walkInOwnerName"
+                  value={formData.walkInOwnerName}
+                  onChange={onChange}
+                  error={fieldErrors.walkInOwnerName}
+                  required
+                  col="col-md-4"
+                />
+
+                <FormInput
+                  label="Owner phone"
+                  name="walkInOwnerPhone"
+                  value={formData.walkInOwnerPhone}
+                  onChange={onChange}
+                  error={fieldErrors.walkInOwnerPhone}
+                  required
+                  col="col-md-4"
+                />
+
+                <FormInput
+                  label="Owner address"
+                  name="walkInOwnerAddress"
+                  value={formData.walkInOwnerAddress}
+                  onChange={onChange}
+                  col="col-md-4"
+                />
+
+                <FormInput
+                  label="Pet name"
+                  name="walkInPetName"
+                  value={formData.walkInPetName}
+                  onChange={onChange}
+                  error={fieldErrors.walkInPetName}
+                  required
+                  col="col-md-4"
+                />
+
+                <FormInput
+                  label="Species"
+                  name="walkInPetSpecies"
+                  value={formData.walkInPetSpecies}
+                  onChange={onChange}
+                  error={fieldErrors.walkInPetSpecies}
+                  required
+                  col="col-md-4"
+                />
+
+                <FormInput
+                  label="Breed"
+                  name="walkInPetBreed"
+                  value={formData.walkInPetBreed}
+                  onChange={onChange}
+                  col="col-md-4"
+                />
+
+                <FormSelect
+                  label="Gender"
+                  name="walkInPetGender"
+                  value={formData.walkInPetGender}
+                  onChange={onChange}
+                  col="col-md-4"
+                >
+                  <option value="">Unknown</option>
+                  <option value="MALE">Male</option>
+                  <option value="FEMALE">Female</option>
+                  <option value="OTHER">Other</option>
+                </FormSelect>
+
+                <FormInput
+                  label="Age"
+                  name="walkInPetAge"
+                  value={formData.walkInPetAge}
+                  onChange={onChange}
+                  placeholder="e.g. 2 years"
+                  col="col-md-4"
+                />
+
+                <FormInput
+                  label="Weight (kg)"
+                  name="walkInPetWeight"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={formData.walkInPetWeight}
+                  onChange={onChange}
+                  error={fieldErrors.walkInPetWeight}
+                  col="col-md-4"
+                />
+              </div>
+            </FormSection>
+          ) : (
+            <FormSection title="Patient and owner">
+              <div className="row g-3">
+                <FormSelect
+                  label="Patient"
+                  name="petId"
+                  value={formData.petId}
+                  onChange={onChange}
+                  error={fieldErrors.petId}
+                  required
+                  col="col-md-6"
+                >
+                  <option value="">
+                    Select patient
+                  </option>
+
+                  {patients.map((patient) => (
+                    <option
+                      key={patient.id}
+                      value={patient.id}
+                    >
+                      {patient.name} —{" "}
+                      {patient.species?.name ||
+                        "Unknown species"} —{" "}
+                      {getOwnerName(patient.owner)}
+                    </option>
+                  ))}
+                </FormSelect>
+
+                <FormInput
+                  label="Owner"
+                  value={getOwnerName(
+                    selectedPatient?.owner,
+                  )}
+                  readOnly
+                  col="col-md-3"
+                />
+
+                <FormInput
+                  label="Phone"
+                  value={
+                    selectedPatient?.owner?.phone || ""
+                  }
+                  readOnly
+                  col="col-md-3"
+                />
+              </div>
+            </FormSection>
+          )}
 
           <FormSection title="Appointment schedule">
             <div className="row g-3">
@@ -1416,27 +1677,31 @@ function AppointmentFormModal({
                 )}
               </FormSelect>
 
-              <FormInput
-                label="Date"
-                name="scheduledDate"
-                type="date"
-                value={formData.scheduledDate}
-                onChange={onChange}
-                error={fieldErrors.scheduledAt}
-                required
-                col="col-md-3"
-              />
+              {!isWalkIn && (
+                <>
+                  <FormInput
+                    label="Date"
+                    name="scheduledDate"
+                    type="date"
+                    value={formData.scheduledDate}
+                    onChange={onChange}
+                    error={fieldErrors.scheduledAt}
+                    required
+                    col="col-md-3"
+                  />
 
-              <FormInput
-                label="Time"
-                name="scheduledTime"
-                type="time"
-                value={formData.scheduledTime}
-                onChange={onChange}
-                error={fieldErrors.scheduledAt}
-                required
-                col="col-md-2"
-              />
+                  <FormInput
+                    label="Time"
+                    name="scheduledTime"
+                    type="time"
+                    value={formData.scheduledTime}
+                    onChange={onChange}
+                    error={fieldErrors.scheduledAt}
+                    required
+                    col="col-md-2"
+                  />
+                </>
+              )}
 
               <FormInput
                 label="Duration"
@@ -1449,7 +1714,7 @@ function AppointmentFormModal({
                 onChange={onChange}
                 error={fieldErrors.durationMin}
                 required
-                col="col-md-3"
+                col={isWalkIn ? "col-md-4" : "col-md-3"}
               />
 
               <FormSelect
@@ -1558,7 +1823,9 @@ function AppointmentFormModal({
 
             {editing
               ? "Save Changes"
-              : "Schedule Appointment"}
+              : isWalkIn
+                ? "Create Walk-in"
+                : "Schedule Appointment"}
           </button>
         </div>
       </form>
@@ -1653,7 +1920,7 @@ function AppointmentDetailsModal({
                   <DetailRow
                     label="Patient"
                     value={
-                      appointment.pet?.name || "—"
+                      appointment.pet?.name || appointment.walkInPetName || "—"
                     }
                   />
 
@@ -1661,21 +1928,24 @@ function AppointmentDetailsModal({
                     label="Species"
                     value={
                       appointment.pet?.species?.name ||
+                      appointment.walkInPetSpecies ||
                       "—"
                     }
                   />
 
                   <DetailRow
                     label="Owner"
-                    value={getOwnerName(
-                      appointment.owner,
-                    )}
+                    value={
+                      getOwnerName(appointment.owner) ||
+                      appointment.walkInOwnerName ||
+                      "—"
+                    }
                   />
 
                   <DetailRow
                     label="Phone"
                     value={
-                      appointment.owner?.phone || "—"
+                      appointment.owner?.phone || appointment.walkInOwnerPhone || "—"
                     }
                   />
                 </DetailSection>

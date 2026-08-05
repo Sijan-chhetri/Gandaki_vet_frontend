@@ -149,17 +149,78 @@ const ownerName = (owner) =>
     .filter(Boolean)
     .join(" ") || "Unknown owner";
 
-const getPetNames = (invoice) => {
-  const values = [
+const getInvoiceCustomer = (invoice) => {
+  const customer = invoice?.customer || {};
+  const appointment = invoice?.appointment || {};
+
+  const registeredOwnerName = ownerName(
+    invoice?.owner,
+  );
+
+  const registeredPetNames = [
     ...new Set(
-      (invoice.items || [])
+      (invoice?.items || [])
         .map((item) => item.pet?.name)
         .filter(Boolean),
     ),
   ];
 
-  return values.join(", ") || "—";
+  const isWalkIn =
+    customer.isWalkIn === true ||
+    appointment.mode === "WALK_IN" ||
+    (!invoice?.ownerId && !invoice?.owner);
+
+  return {
+    isWalkIn,
+    ownerName:
+      (invoice?.owner
+        ? registeredOwnerName
+        : "") ||
+      customer.ownerName ||
+      invoice?.walkInOwnerName ||
+      appointment.walkInOwnerName ||
+      "Walk-in customer",
+    ownerPhone:
+      invoice?.owner?.phone ||
+      customer.ownerPhone ||
+      invoice?.walkInOwnerPhone ||
+      appointment.walkInOwnerPhone ||
+      "",
+    ownerEmail:
+      invoice?.owner?.email ||
+      customer.ownerEmail ||
+      "",
+    ownerAddress:
+      invoice?.owner?.address ||
+      customer.ownerAddress ||
+      invoice?.walkInOwnerAddress ||
+      appointment.walkInOwnerAddress ||
+      "",
+    petNames:
+      registeredPetNames.length > 0
+        ? registeredPetNames.join(", ")
+        : customer.petName ||
+          invoice?.walkInPetName ||
+          appointment.walkInPetName ||
+          "Walk-in pet",
+    petSpecies:
+      customer.petSpecies ||
+      invoice?.walkInPetSpecies ||
+      appointment.walkInPetSpecies ||
+      "",
+    petBreed:
+      customer.petBreed ||
+      invoice?.walkInPetBreed ||
+      appointment.walkInPetBreed ||
+      "",
+  };
 };
+
+const getPetNames = (invoice) =>
+  getInvoiceCustomer(invoice).petNames;
+
+const getInvoiceOwnerName = (invoice) =>
+  getInvoiceCustomer(invoice).ownerName;
 
 const emptyRetailLine = () => ({
   key: `${Date.now()}-${Math.random()}`,
@@ -1161,23 +1222,25 @@ useEffect(() => {
       "normal",
     );
     document.text(
-      ownerName(invoice.owner),
+      getInvoiceOwnerName(invoice),
       14,
       54,
     );
 
-    if (invoice.owner?.phone) {
+    const invoiceCustomer = getInvoiceCustomer(invoice);
+
+    if (invoiceCustomer.ownerPhone) {
       document.text(
-        invoice.owner.phone,
+        invoiceCustomer.ownerPhone,
         14,
         59,
       );
     }
 
-    if (invoice.owner?.address) {
+    if (invoiceCustomer.ownerAddress) {
       const address =
         document.splitTextToSize(
-          invoice.owner.address,
+          invoiceCustomer.ownerAddress,
           85,
         );
 
@@ -1192,7 +1255,9 @@ useEffect(() => {
       invoice.items || []
     ).map((item) => [
       item.description,
-      item.pet?.name || "—",
+      item.pet?.name ||
+        getInvoiceCustomer(invoice).petNames ||
+        "—",
       Number(item.quantity),
       money(
         item.unitPrice,
@@ -2180,14 +2245,12 @@ useEffect(() => {
 
                       <td>
                         <div className="fw-semibold">
-                          {ownerName(
-                            invoice.owner,
-                          )}
+                          {getInvoiceOwnerName(invoice)}
                         </div>
 
                         <small className="text-secondary">
-                          {invoice.owner
-                            ?.phone ||
+                          {getInvoiceCustomer(invoice)
+                            .ownerPhone ||
                             "No phone"}
                         </small>
                       </td>
@@ -3042,9 +3105,7 @@ useEffect(() => {
             {/* Invoice and customer information */}
             <div className="payment-customer-card">
               <div className="payment-customer-avatar">
-                {ownerName(
-                  paymentInvoice.owner,
-                )
+                {getInvoiceOwnerName(paymentInvoice)
                   ?.charAt(0)
                   ?.toUpperCase() || "C"}
               </div>
@@ -3055,13 +3116,12 @@ useEffect(() => {
                 </small>
 
                 <h6 className="fw-bold mb-1">
-                  {ownerName(
-                    paymentInvoice.owner,
-                  )}
+                  {getInvoiceOwnerName(paymentInvoice)}
                 </h6>
 
                 <div className="text-secondary small">
-                  {paymentInvoice.owner?.phone ||
+                  {getInvoiceCustomer(paymentInvoice)
+                    .ownerPhone ||
                     "No phone number"}
                 </div>
               </div>
@@ -3660,7 +3720,7 @@ function InvoiceDetailsModal({
         {/* Customer information */}
         <div className="invoice-customer-card">
           <div className="invoice-customer-avatar">
-            {ownerName(invoice.owner)
+            {getInvoiceOwnerName(invoice)
               ?.charAt(0)
               ?.toUpperCase() || "C"}
           </div>
@@ -3671,18 +3731,19 @@ function InvoiceDetailsModal({
             </small>
 
             <h5 className="fw-bold mb-1">
-              {ownerName(invoice.owner)}
+              {getInvoiceOwnerName(invoice)}
             </h5>
 
             <div className="d-flex flex-wrap gap-3 text-secondary small">
               <span>
-                {invoice.owner?.phone ||
+                {getInvoiceCustomer(invoice)
+                  .ownerPhone ||
                   "No phone number"}
               </span>
 
-              {invoice.owner?.email && (
+              {getInvoiceCustomer(invoice).ownerEmail && (
                 <span>
-                  {invoice.owner.email}
+                  {getInvoiceCustomer(invoice).ownerEmail}
                 </span>
               )}
             </div>
@@ -3699,9 +3760,10 @@ function InvoiceDetailsModal({
             <div>
               <small>Source</small>
               <strong>
-                {invoice.appointment
-                  ?.appointmentNo ||
-                  "Retail sale"}
+                {invoice.appointment?.appointmentNo ||
+                  (getInvoiceCustomer(invoice).isWalkIn
+                    ? "Walk-in"
+                    : "Retail sale")}
               </strong>
             </div>
 
@@ -5025,7 +5087,9 @@ function buildPrintHtml(
         item.description,
       )}</td>
           <td>${escapeHtml(
-        item.pet?.name || "—",
+        item.pet?.name ||
+        getInvoiceCustomer(invoice).petNames ||
+        "—",
       )}</td>
           <td class="right">${Number(
         item.quantity,
@@ -5180,22 +5244,20 @@ function buildPrintHtml(
 
           <div>
             ${escapeHtml(
-    ownerName(
-      invoice.owner,
-    ),
+    getInvoiceOwnerName(invoice),
   )}
           </div>
 
           <div class="muted">
             ${escapeHtml(
-    invoice.owner?.phone ||
+    getInvoiceCustomer(invoice).ownerPhone ||
     "",
   )}
           </div>
 
           <div class="muted">
             ${escapeHtml(
-    invoice.owner?.address ||
+    getInvoiceCustomer(invoice).ownerAddress ||
     "",
   )}
           </div>
