@@ -30,6 +30,7 @@ import apiRequest from "../../services/api";
 import appointmentService from "../../services/appointment.service";
 import patientService from "../../services/patient.service";
 import serviceService from "../../services/service.service";
+import vaccinationService from "../../services/vaccination.service.js";
 
 const APPOINTMENT_TYPES = [
   { value: "CONSULTATION", label: "Consultation" },
@@ -74,6 +75,13 @@ const initialFormData = {
   reason: "",
   symptoms: "",
   notes: "",
+  vaccineItemId: "",
+  vaccineName: "",
+  vaccinePricePerDose: "",
+  vaccineDose: "",
+  vaccineRoute: "Subcutaneous",
+  vaccineSite: "",
+  vaccineNotes: "",
 };
 
 const initialPagination = {
@@ -153,6 +161,7 @@ function Appointments() {
   const [veterinarians, setVeterinarians] =
     useState([]);
   const [services, setServices] = useState([]);
+  const [vaccines, setVaccines] = useState([]);
 
   const [stats, setStats] = useState(initialStats);
   const [pagination, setPagination] =
@@ -292,6 +301,7 @@ function Appointments() {
         patientsResult,
         veterinariansResult,
         servicesResult,
+        vaccinesResult,
       ] = await Promise.all([
         patientService.getPatients({
           page: 1,
@@ -307,6 +317,13 @@ function Appointments() {
           page: 1,
           limit: 100,
           isActive: true,
+          sortBy: "name",
+          sortOrder: "asc",
+        }),
+
+        vaccinationService.getVaccineInventory({
+          page: 1,
+          limit: 100,
           sortBy: "name",
           sortOrder: "asc",
         }),
@@ -329,6 +346,10 @@ function Appointments() {
 
       setServices(
         extractArray(servicesResult, ["services"]),
+      );
+
+      setVaccines(
+        extractArray(vaccinesResult, ["items", "inventoryItems"]),
       );
     } catch (requestError) {
       setError(
@@ -389,6 +410,10 @@ function Appointments() {
               (service) => service.id === value,
             )
           : null;
+      const selectedVaccine =
+        name === "vaccineItemId"
+          ? vaccines.find((vaccine) => vaccine.id === value)
+          : null;
 
       return {
         ...previous,
@@ -426,6 +451,16 @@ function Appointments() {
               durationMin: String(
                 selectedService.durationMin,
               ),
+            }
+          : {}),
+        ...(name === "serviceId" && selectedService?.code === "VACCINATION"
+          ? { type: "VACCINATION" }
+          : {}),
+        ...(name === "vaccineItemId"
+          ? {
+              vaccineName: selectedVaccine?.name || "",
+              vaccinePricePerDose:
+                selectedVaccine?.sellingPrice ?? "",
             }
           : {}),
       };
@@ -501,6 +536,14 @@ function Appointments() {
       reason: appointment.reason || "",
       symptoms: appointment.symptoms || "",
       notes: appointment.notes || "",
+      vaccineItemId: appointment.vaccination?.vaccineItemId || "",
+      vaccineName: appointment.vaccination?.vaccineName || "",
+      vaccinePricePerDose:
+        appointment.vaccination?.pricePerDose ?? "",
+      vaccineDose: appointment.vaccination?.dose || "",
+      vaccineRoute: appointment.vaccination?.route || "Subcutaneous",
+      vaccineSite: appointment.vaccination?.site || "",
+      vaccineNotes: appointment.vaccination?.notes || "",
     });
     setFieldErrors({});
     setFormError("");
@@ -577,6 +620,26 @@ function Appointments() {
         "Appointment type is required.";
     }
 
+    if (formData.type === "VACCINATION") {
+      if (isWalkIn) {
+        errors.mode =
+          "Vaccination appointments require a registered pet.";
+      }
+
+      if (!formData.vaccineItemId) {
+        errors.vaccineItemId =
+          "Please select a vaccine.";
+      }
+
+      const selectedService = services.find(
+        (service) => service.id === formData.serviceId,
+      );
+      if (selectedService?.code !== "VACCINATION") {
+        errors.serviceId =
+          "Please select the Vaccination service.";
+      }
+    }
+
     const duration = Number(
       formData.durationMin,
     );
@@ -595,6 +658,18 @@ function Appointments() {
 
   function createPayload() {
     const isWalkIn = formData.mode === "WALK_IN";
+
+    const vaccination =
+      formData.type === "VACCINATION"
+        ? {
+            vaccineItemId: formData.vaccineItemId,
+            vaccineName: formData.vaccineName.trim(),
+            dose: formData.vaccineDose.trim() || null,
+            route: formData.vaccineRoute || null,
+            site: formData.vaccineSite.trim() || null,
+            notes: formData.vaccineNotes.trim() || null,
+          }
+        : undefined;
 
     const commonPayload = {
       mode: formData.mode,
@@ -636,6 +711,7 @@ function Appointments() {
           formData.walkInPetWeight !== ""
             ? Number(formData.walkInPetWeight)
             : null,
+        vaccination,
       };
     }
 
@@ -657,6 +733,7 @@ function Appointments() {
       walkInPetGender: null,
       walkInPetAge: null,
       walkInPetWeight: null,
+      vaccination,
     };
   }
 
@@ -1389,6 +1466,7 @@ function Appointments() {
           patients={patients}
           veterinarians={veterinarians}
           services={services}
+          vaccines={vaccines}
           selectedPatient={selectedPatient}
           fieldErrors={fieldErrors}
           formError={formError}
@@ -1450,6 +1528,7 @@ function AppointmentFormModal({
   patients,
   veterinarians,
   services,
+  vaccines,
   selectedPatient,
   fieldErrors,
   formError,
@@ -1746,6 +1825,7 @@ function AppointmentFormModal({
                 name="serviceId"
                 value={formData.serviceId}
                 onChange={onChange}
+                error={fieldErrors.serviceId}
                 col="col-md-6"
               >
                 <option value="">
@@ -1766,6 +1846,101 @@ function AppointmentFormModal({
               </FormSelect>
             </div>
           </FormSection>
+
+          {formData.type === "VACCINATION" && (
+            <FormSection title="Vaccination details">
+              <div className="row g-3">
+                <FormSelect
+                  label="Vaccine"
+                  name="vaccineItemId"
+                  value={formData.vaccineItemId}
+                  onChange={onChange}
+                  error={fieldErrors.vaccineItemId}
+                  required
+                  disabled={editing}
+                  col="col-md-6"
+                >
+                  <option value="">Select vaccine</option>
+                  {vaccines.map((vaccine) => (
+                    <option key={vaccine.id} value={vaccine.id}>
+                      {vaccine.name}
+                      {vaccine.code ? ` — ${vaccine.code}` : ""}
+                    </option>
+                  ))}
+                </FormSelect>
+
+                <FormInput
+                  label="Vaccine name"
+                  name="vaccineName"
+                  value={formData.vaccineName}
+                  readOnly
+                  col="col-md-4"
+                />
+
+                <FormInput
+                  label="Price per dose"
+                  name="vaccinePricePerDose"
+                  value={
+                    formData.vaccinePricePerDose === ""
+                      ? ""
+                      : `Rs. ${Number(formData.vaccinePricePerDose).toFixed(2)}`
+                  }
+                  readOnly
+                  col="col-md-4"
+                />
+
+                <FormInput
+                  label="Dose"
+                  name="vaccineDose"
+                  value={formData.vaccineDose}
+                  onChange={onChange}
+                  disabled={editing}
+                  placeholder="e.g. 1 ml"
+                  col="col-md-4"
+                />
+
+                <FormSelect
+                  label="Route"
+                  name="vaccineRoute"
+                  value={formData.vaccineRoute}
+                  onChange={onChange}
+                  disabled={editing}
+                  col="col-md-4"
+                >
+                  <option value="Subcutaneous">Subcutaneous</option>
+                  <option value="Intramuscular">Intramuscular</option>
+                  <option value="Intravenous">Intravenous</option>
+                  <option value="Oral">Oral</option>
+                  <option value="Other">Other</option>
+                </FormSelect>
+
+                <FormInput
+                  label="Site"
+                  name="vaccineSite"
+                  value={formData.vaccineSite}
+                  onChange={onChange}
+                  disabled={editing}
+                  placeholder="e.g. Right shoulder"
+                  col="col-md-4"
+                />
+
+                <FormTextarea
+                  label="Vaccination notes"
+                  name="vaccineNotes"
+                  value={formData.vaccineNotes}
+                  onChange={onChange}
+                  disabled={editing}
+                  col="col-12"
+                  rows="2"
+                />
+              </div>
+              <div className="alert alert-info mt-3 mb-0 small">
+                {editing
+                  ? "Vaccination details are shown from the linked vaccination record. Manage administration and stock from the Vaccination module."
+                  : "This appointment schedules the vaccination. The existing Vaccination module can later mark it as administered and deduct vaccine stock."}
+              </div>
+            </FormSection>
+          )}
 
           <FormSection title="Clinical details">
             <div className="row g-3">
