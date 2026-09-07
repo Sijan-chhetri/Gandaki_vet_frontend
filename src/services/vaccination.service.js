@@ -109,6 +109,20 @@ export function getVeterinarians(params = {}) {
   );
 }
 
+export function sendAllVaccinationReminders() {
+  return apiRequest("/sms/vaccination-reminders", {
+    method: "POST",
+  });
+}
+
+export function sendOwnerVaccinationReminder(ownerId) {
+  requireId(ownerId, "Owner ID");
+
+  return apiRequest(`/sms/vaccination-reminders/${ownerId}`, {
+    method: "POST",
+  });
+}
+
 const vaccinationService = {
   getVaccinations,
   getStats: getVaccinationStats,
@@ -124,6 +138,8 @@ const vaccinationService = {
   getPets,
   getVaccineInventory,
   getVeterinarians,
+  sendAllReminders: sendAllVaccinationReminders,
+  sendOwnerReminder: sendOwnerVaccinationReminder,
 };
 
 export default vaccinationService;

@@ -15,6 +15,8 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Send,
+  BellRing,
   ShieldCheck,
   Syringe,
   Trash2,
@@ -83,6 +85,7 @@ const normalizeVaccination = (record) => ({
     [record.pet?.owner?.firstName, record.pet?.owner?.lastName]
       .filter(Boolean)
       .join(" ") || "Unknown owner",
+  ownerId: record.pet?.owner?.id || record.ownerId || null,
   ownerEmail: record.pet?.owner?.email || null,
   ownerPhone: record.pet?.owner?.phone || null,
   species: record.pet?.species?.name || "Not specified",
@@ -127,6 +130,7 @@ function Vaccination() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [reminderLoading, setReminderLoading] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -471,6 +475,98 @@ function Vaccination() {
     }
   }
 
+  async function handleSendAllReminders() {
+    if (
+      !window.confirm(
+        "Send vaccination reminder SMS messages to all eligible owners?"
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setReminderLoading("all");
+      setError("");
+      setSuccess("");
+
+      const response = await vaccinationService.sendAllReminders();
+      const data = response?.data || response || {};
+
+      const sent =
+        data.sent ??
+        data.successCount ??
+        data.sentCount ??
+        data.totalSent;
+
+      const failed =
+        data.failed ??
+        data.failedCount ??
+        data.totalFailed;
+
+      const suffix = [
+        sent !== undefined ? `${sent} sent` : "",
+        failed !== undefined ? `${failed} failed` : "",
+      ]
+        .filter(Boolean)
+        .join(", ");
+
+      setSuccess(
+        suffix
+          ? `Vaccination reminders processed successfully (${suffix}).`
+          : data.message || "Vaccination reminders sent successfully."
+      );
+    } catch (requestError) {
+      setError(
+        requestError.message || "Unable to send vaccination reminders."
+      );
+    } finally {
+      setReminderLoading("");
+    }
+  }
+
+  async function handleSendOwnerReminder(item) {
+    if (!item?.ownerId) {
+      setError("This vaccination record does not have a linked owner.");
+      return;
+    }
+
+    if (!item?.ownerPhone) {
+      setError(
+        `${item.ownerName || "This owner"} does not have a phone number saved.`
+      );
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `Send a vaccination reminder SMS to ${item.ownerName} at ${item.ownerPhone}?`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setReminderLoading(`owner:${item.ownerId}`);
+      setError("");
+      setSuccess("");
+
+      const response = await vaccinationService.sendOwnerReminder(item.ownerId);
+      const data = response?.data || response || {};
+
+      setSuccess(
+        data.message ||
+          `Vaccination reminder sent to ${item.ownerName} successfully.`
+      );
+    } catch (requestError) {
+      setError(
+        requestError.message ||
+          `Unable to send reminder to ${item.ownerName}.`
+      );
+    } finally {
+      setReminderLoading("");
+    }
+  }
+
   function resetFilters() {
     setSearchTerm("");
     setStatusFilter("");
@@ -547,7 +643,7 @@ function Vaccination() {
 
             <h2 className="fw-bold mb-3">Keep every pet protected and every vaccine on schedule.</h2>
             <p className="text-secondary mb-4" style={{ maxWidth: 650 }}>
-              Manage vaccination schedules, administration, vaccine inventory, due dates and owner reminder emails from one workspace.
+              Manage vaccination schedules, administration, vaccine inventory, due dates and owner SMS reminders from one workspace.
             </p>
 
             <div className="d-flex flex-wrap gap-2">
@@ -556,6 +652,19 @@ function Vaccination() {
               </button>
               <button type="button" className="btn btn-light border d-flex align-items-center gap-2 px-4" onClick={exportCsv}>
                 <Download size={18} /> Export CSV
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline-primary d-flex align-items-center gap-2 px-4"
+                onClick={handleSendAllReminders}
+                disabled={Boolean(reminderLoading)}
+              >
+                {reminderLoading === "all" ? (
+                  <LoaderCircle size={18} className="spinner-border-sm" />
+                ) : (
+                  <BellRing size={18} />
+                )}
+                {reminderLoading === "all" ? "Sending..." : "Send All Reminders"}
               </button>
               <button type="button" className="btn btn-light border d-flex align-items-center gap-2 px-4" onClick={() => reload()}>
                 <RefreshCw size={18} /> Refresh
@@ -656,6 +765,38 @@ function Vaccination() {
               </div>
             </div>
           </div>
+
+          <div className="card border-0 shadow-sm rounded-4 mt-4 reminder-card">
+            <div className="card-body p-4">
+              <div className="d-flex align-items-start gap-3">
+                <div className="reminder-icon">
+                  <BellRing size={20} />
+                </div>
+                <div className="flex-grow-1">
+                  <h6 className="fw-bold mb-1">Owner SMS Reminders</h6>
+                  <p className="small text-secondary mb-3">
+                    Send reminders to all owners who are eligible for upcoming
+                    or due vaccinations.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm w-100 d-flex align-items-center justify-content-center gap-2"
+                    onClick={handleSendAllReminders}
+                    disabled={Boolean(reminderLoading)}
+                  >
+                    {reminderLoading === "all" ? (
+                      <LoaderCircle size={15} className="spinner-border-sm" />
+                    ) : (
+                      <Send size={15} />
+                    )}
+                    {reminderLoading === "all"
+                      ? "Sending reminders..."
+                      : "Send All Reminders"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </aside>
 
         <main className="col-xl-9">
@@ -670,7 +811,15 @@ function Vaccination() {
           <div className="row g-4">
             {!loading && vaccinations.length ? vaccinations.map((item) => (
               <div className="col-md-6" key={item.id}>
-                <VaccinationCard item={item} onView={() => setSelectedVaccination(item)} onEdit={() => openEditForm(item)} onDelete={() => handleDelete(item)} onAdminister={() => handleAdminister(item)} />
+                <VaccinationCard
+                  item={item}
+                  onView={() => setSelectedVaccination(item)}
+                  onEdit={() => openEditForm(item)}
+                  onDelete={() => handleDelete(item)}
+                  onAdminister={() => handleAdminister(item)}
+                  onSendReminder={() => handleSendOwnerReminder(item)}
+                  reminderLoading={reminderLoading === `owner:${item.ownerId}`}
+                />
               </div>
             )) : !loading ? (
               <div className="col-12">
@@ -723,6 +872,10 @@ function Vaccination() {
           onAdminister={() => handleAdminister(selectedVaccination)}
           onMissed={() => handleMissed(selectedVaccination)}
           onCancel={() => handleCancel(selectedVaccination)}
+          onSendReminder={() => handleSendOwnerReminder(selectedVaccination)}
+          reminderLoading={
+            reminderLoading === `owner:${selectedVaccination.ownerId}`
+          }
         />
       )}
 
@@ -745,6 +898,9 @@ function Vaccination() {
         .timeline-item:last-child { padding-bottom: 0 !important; }
         .timeline-dot { width: 12px; height: 12px; border-radius: 50%; margin-top: 4px; z-index: 1; background: var(--bs-primary); box-shadow: 0 0 0 4px rgba(var(--bs-primary-rgb), .12); }
         .timeline-dot-danger { background: var(--bs-danger); box-shadow: 0 0 0 4px rgba(var(--bs-danger-rgb), .12); }
+        .reminder-card { border: 1px solid rgba(var(--bs-primary-rgb), .12) !important; background: linear-gradient(180deg, rgba(var(--bs-primary-rgb), .045), #fff); }
+        .reminder-icon { width: 44px; height: 44px; border-radius: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--bs-primary); background: rgba(var(--bs-primary-rgb), .1); }
+        .reminder-button { border-radius: 12px; }
         .floating-add-vaccination { position: fixed; right: 28px; bottom: 28px; width: 58px; height: 58px; z-index: 1030; display: flex; align-items: center; justify-content: center; }
         @media (max-width: 767.98px) { .vaccination-hero { padding: 24px !important; } .floating-add-vaccination { right: 18px; bottom: 18px; width: 52px; height: 52px; } }
       `}</style>
@@ -752,7 +908,15 @@ function Vaccination() {
   );
 }
 
-function VaccinationCard({ item, onView, onEdit, onDelete, onAdminister }) {
+function VaccinationCard({
+  item,
+  onView,
+  onEdit,
+  onDelete,
+  onAdminister,
+  onSendReminder,
+  reminderLoading,
+}) {
   return (
     <article className="vaccination-card card border-0 shadow-sm rounded-4 h-100">
       <div className="card-body p-4">
@@ -788,12 +952,41 @@ function VaccinationCard({ item, onView, onEdit, onDelete, onAdminister }) {
           <RecordInfo icon={ShieldCheck} text={`By: ${item.administeredBy}`} />
         </div>
 
-        <div className="d-flex justify-content-between align-items-center pt-3 border-top">
-          {item.status === "SCHEDULED" ? (
-            <button type="button" className="btn btn-sm btn-success d-flex align-items-center gap-1" onClick={onAdminister}>
-              <Syringe size={15} /> Administer
-            </button>
-          ) : <span />}
+        <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 pt-3 border-top">
+          <div className="d-flex flex-wrap gap-2">
+            {item.status === "SCHEDULED" && (
+              <button
+                type="button"
+                className="btn btn-sm btn-success d-flex align-items-center gap-1"
+                onClick={onAdminister}
+              >
+                <Syringe size={15} /> Administer
+              </button>
+            )}
+
+            {(item.status === "SCHEDULED" || item.status === "MISSED") && (
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 reminder-button"
+                onClick={onSendReminder}
+                disabled={reminderLoading || !item.ownerId || !item.ownerPhone}
+                title={
+                  !item.ownerId
+                    ? "No linked owner"
+                    : !item.ownerPhone
+                      ? "Owner phone number is not available"
+                      : "Send reminder SMS to owner"
+                }
+              >
+                {reminderLoading ? (
+                  <LoaderCircle size={15} className="spinner-border-sm" />
+                ) : (
+                  <Send size={15} />
+                )}
+                {reminderLoading ? "Sending..." : "Remind Owner"}
+              </button>
+            )}
+          </div>
 
           <button type="button" className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1" onClick={onView}>
             Details <ChevronRight size={15} />
@@ -910,7 +1103,7 @@ function VaccinationFormModal({
               <FormInput label="Administered Date" name="administeredDate" type="date" value={formData.administeredDate} onChange={onChange} required={formData.status === "ADMINISTERED"} col="col-md-4" />
               <FormInput label="Next Due Date" name="nextDueDate" type="date" value={formData.nextDueDate} onChange={onChange} col="col-md-4" />
             </div>
-            <small className="text-secondary d-block mt-2">When reminders are enabled in clinic settings, the backend cron emails the owner before the scheduled or next due date if an email exists.</small>
+            <small className="text-secondary d-block mt-2">SMS reminders can be sent manually from this page to the pet owner when a valid phone number is saved.</small>
           </FormSection>
 
           <FormSection title="Clinical notes">
@@ -929,7 +1122,17 @@ function VaccinationFormModal({
   );
 }
 
-function VaccinationDetailsModal({ item, saving, onClose, onEdit, onAdminister, onMissed, onCancel }) {
+function VaccinationDetailsModal({
+  item,
+  saving,
+  onClose,
+  onEdit,
+  onAdminister,
+  onMissed,
+  onCancel,
+  onSendReminder,
+  reminderLoading,
+}) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -986,9 +1189,38 @@ function VaccinationDetailsModal({ item, saving, onClose, onEdit, onAdminister, 
 
             <div className="col-md-6">
               <DetailPanel title="Reminder eligibility">
-                <DetailRow label="Owner email" value={item.ownerEmail ? "Available" : "Not available"} />
-                <DetailRow label="Reminder date" value={formatDate(item.nextDueDate || item.scheduledDate)} />
-                <p className="small text-secondary mb-0 mt-3">The server cron sends email reminders only when vaccination and email notifications are enabled for the clinic.</p>
+                <DetailRow
+                  label="Owner phone"
+                  value={item.ownerPhone || "Not available"}
+                />
+                <DetailRow
+                  label="Reminder date"
+                  value={formatDate(item.nextDueDate || item.scheduledDate)}
+                />
+                <DetailRow
+                  label="Can send SMS"
+                  value={item.ownerId && item.ownerPhone ? "Yes" : "No"}
+                />
+                <button
+                  type="button"
+                  className="btn btn-outline-primary btn-sm w-100 mt-3 d-flex align-items-center justify-content-center gap-2"
+                  onClick={onSendReminder}
+                  disabled={
+                    reminderLoading ||
+                    !item.ownerId ||
+                    !item.ownerPhone ||
+                    item.status === "CANCELLED"
+                  }
+                >
+                  {reminderLoading ? (
+                    <LoaderCircle size={15} className="spinner-border-sm" />
+                  ) : (
+                    <Send size={15} />
+                  )}
+                  {reminderLoading
+                    ? "Sending reminder..."
+                    : "Send Reminder SMS"}
+                </button>
               </DetailPanel>
             </div>
 
@@ -1000,6 +1232,21 @@ function VaccinationDetailsModal({ item, saving, onClose, onEdit, onAdminister, 
 
         <div className="border-top p-3 d-flex flex-wrap justify-content-end gap-2" style={{ flexShrink: 0 }}>
           <button type="button" className="btn btn-light border" onClick={onClose}>Close</button>
+          {item.status !== "CANCELLED" && (
+            <button
+              type="button"
+              className="btn btn-outline-primary d-flex align-items-center gap-2"
+              disabled={saving || reminderLoading || !item.ownerId || !item.ownerPhone}
+              onClick={onSendReminder}
+            >
+              {reminderLoading ? (
+                <LoaderCircle size={16} className="spinner-border-sm" />
+              ) : (
+                <Send size={16} />
+              )}
+              {reminderLoading ? "Sending..." : "Remind Owner"}
+            </button>
+          )}
           {item.status === "SCHEDULED" && <button type="button" className="btn btn-outline-warning" disabled={saving} onClick={onMissed}>Mark Missed</button>}
           {item.status === "SCHEDULED" && <button type="button" className="btn btn-outline-danger" disabled={saving} onClick={onCancel}>Cancel</button>}
           {item.status === "SCHEDULED" && <button type="button" className="btn btn-success d-flex align-items-center gap-2" disabled={saving} onClick={onAdminister}><Syringe size={16} />Administer</button>}
