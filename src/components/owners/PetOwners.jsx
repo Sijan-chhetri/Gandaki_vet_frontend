@@ -1131,6 +1131,7 @@ function OwnerOverview({ owner }) {
         <DetailRow
           label="Owner Code"
           value={owner.ownerCode}
+          
         />
         <DetailRow
           label="Status"
@@ -1411,6 +1412,7 @@ function OwnerFormModal({
             value={formData.ownerCode}
             onChange={onChange}
             placeholder="Generated automatically"
+            disabled
             col="col-md-6"
           />
           <div className="col-md-6 d-flex align-items-end">

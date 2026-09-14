@@ -38,7 +38,7 @@ const APPOINTMENT_TYPES = [
   { value: "FOLLOW_UP", label: "Follow-up" },
   { value: "SURGERY", label: "Surgery" },
   { value: "EMERGENCY", label: "Emergency" },
-  
+
   { value: "GROOMING", label: "Grooming" },
   { value: "OTHER", label: "Other" },
 ];
@@ -232,27 +232,27 @@ function Appointments() {
     setSelectedServices(nextServices);
 
     const totalDuration = nextServices.reduce(
-    (total, service) =>
-      total + Number(service.durationMin || 0),
-    0
-  );
+      (total, service) =>
+        total + Number(service.durationMin || 0),
+      0
+    );
 
-  setFormData((previous) => ({
-    ...previous,
-    serviceIds: nextServices.map((service) => service.id),
-    durationMin:
-      totalDuration > 0
-        ? String(totalDuration)
-        : "30",
-  }));
+    setFormData((previous) => ({
+      ...previous,
+      serviceIds: nextServices.map((service) => service.id),
+      durationMin:
+        totalDuration > 0
+          ? String(totalDuration)
+          : "30",
+    }));
 
-  setFieldErrors((previous) => ({
-    ...previous,
-    serviceIds: "",
-  }));
+    setFieldErrors((previous) => ({
+      ...previous,
+      serviceIds: "",
+    }));
 
-  setFormError("");
-};
+    setFormError("");
+  };
 
   const loadAppointments = useCallback(
     async (page = 1) => {
@@ -289,10 +289,10 @@ function Appointments() {
         setAppointments(
           isDoctor && currentUser?.id
             ? receivedAppointments.filter(
-                (appointment) =>
-                  appointment.veterinarianId === currentUser.id ||
-                  appointment.veterinarian?.id === currentUser.id,
-              )
+              (appointment) =>
+                appointment.veterinarianId === currentUser.id ||
+                appointment.veterinarian?.id === currentUser.id,
+            )
             : receivedAppointments,
         );
 
@@ -306,7 +306,7 @@ function Appointments() {
       } catch (requestError) {
         setError(
           requestError.message ||
-            "Unable to retrieve appointments.",
+          "Unable to retrieve appointments.",
         );
       } finally {
         setLoading(false);
@@ -398,7 +398,7 @@ function Appointments() {
     } catch (requestError) {
       setError(
         requestError.message ||
-          "Unable to load appointment options.",
+        "Unable to load appointment options.",
       );
     } finally {
       setOptionsLoading(false);
@@ -424,7 +424,7 @@ function Appointments() {
 
     const nextServiceId = vaccinationService.id || "";
     const nextDuration = String(vaccinationService.durationMin || 30);
-   setSelectedServices([vaccinationService]);
+    setSelectedServices([vaccinationService]);
     setFormData((previous) => {
       if (
         previous.type === "VACCINATION" &&
@@ -473,75 +473,139 @@ function Appointments() {
     setAppliedFilters(emptyFilters);
   }
 
-const handleFormChange = (e) => {
-  const { name, value } = e.target;
+  const handleFormChange = (e) => {
+    const { name, value } = e.target;
 
-  setFieldErrors((previous) => ({
-    ...previous,
-    [name]: "",
-  }));
+    setFieldErrors((previous) => ({
+      ...previous,
+      [name]: "",
+    }));
 
-  setFormError("");
+    setFormError("");
 
-  // Changing appointment type
-  if (name === "type") {
-    const vaccinationService =
-      findVaccinationService(services);
+    /* -------------------------------------------------- */
+    /* Patient selection                                  */
+    /* -------------------------------------------------- */
 
-    if (value === "VACCINATION" && vaccinationService) {
-      setSelectedServices([vaccinationService]);
+    if (name === "petId") {
+      const patient =
+        patients.find(
+          (item) => item.id === value,
+        ) || null;
 
       setFormData((previous) => ({
         ...previous,
-        type: value,
-        serviceIds: [vaccinationService.id],
-        durationMin: String(
-          vaccinationService.durationMin || 30
-        ),
-        veterinarianId: "",
+
+        petId: value,
+
+        // Automatically set owner from selected patient
+        ownerId:
+          patient?.owner?.id ||
+          patient?.ownerId ||
+          "",
+      }));
+
+      setFieldErrors((previous) => ({
+        ...previous,
+        petId: "",
+        ownerId: "",
       }));
 
       return;
     }
 
-    // Switching away from vaccination
-    setSelectedServices([]);
+    /* -------------------------------------------------- */
+    /* Appointment type                                   */
+    /* -------------------------------------------------- */
+
+    if (name === "type") {
+      const vaccinationService =
+        findVaccinationService(services);
+
+      if (
+        value === "VACCINATION" &&
+        vaccinationService
+      ) {
+        setSelectedServices([
+          vaccinationService,
+        ]);
+
+        setFormData((previous) => ({
+          ...previous,
+
+          type: value,
+
+          serviceIds: [
+            vaccinationService.id,
+          ],
+
+          durationMin: String(
+            vaccinationService.durationMin ||
+            30,
+          ),
+
+          veterinarianId: "",
+        }));
+
+        setFieldErrors((previous) => ({
+          ...previous,
+          type: "",
+          serviceIds: "",
+        }));
+
+        return;
+      }
+
+      // Switching away from vaccination
+      setSelectedServices([]);
+
+      setFormData((previous) => ({
+        ...previous,
+        type: value,
+        serviceIds: [],
+        durationMin: "30",
+      }));
+
+      return;
+    }
+
+    /* -------------------------------------------------- */
+    /* Vaccine selection                                  */
+    /* -------------------------------------------------- */
+
+    if (name === "vaccineItemId") {
+      const selectedVaccine =
+        vaccines.find(
+          (vaccine) =>
+            vaccine.id === value,
+        );
+
+      setFormData((previous) => ({
+        ...previous,
+
+        vaccineItemId: value,
+
+        vaccineName:
+          selectedVaccine?.name || "",
+
+        vaccinePricePerDose:
+          selectedVaccine?.sellingPrice ??
+          selectedVaccine?.price ??
+          "",
+      }));
+
+      return;
+    }
+
+    /* -------------------------------------------------- */
+    /* Normal fields                                      */
+    /* -------------------------------------------------- */
 
     setFormData((previous) => ({
       ...previous,
-      type: value,
-      serviceIds: [],
-      durationMin: "30",
+      [name]: value,
     }));
-
-    return;
-  }
-
-  // Handle vaccine selection - auto-fill name and price
-  if (name === "vaccineItemId") {
-    const selectedVaccine = vaccines.find(
-      (vaccine) => vaccine.id === value
-    );
-
-    setFormData((previous) => ({
-      ...previous,
-      vaccineItemId: value,
-      vaccineName: selectedVaccine?.name || "",
-      vaccinePricePerDose:
-        selectedVaccine?.sellingPrice ??
-        selectedVaccine?.price ??
-        "",
-    }));
-
-    return;
-  }
-
-  // Normal field change
-  setFormData((previous) => ({
-    ...previous,
-    [name]: value,
-  }));
-};
+  };
 
   // ADD openAddForm function
   function openAddForm() {
@@ -658,7 +722,12 @@ const handleFormChange = (e) => {
         errors.petId = "Please select a patient.";
       }
 
-      if (!formData.ownerId) {
+      const ownerId =
+        formData.ownerId ||
+        selectedPatient?.owner?.id ||
+        selectedPatient?.ownerId;
+
+      if (!ownerId) {
         errors.ownerId =
           "The selected patient has no owner.";
       }
@@ -683,7 +752,7 @@ const handleFormChange = (e) => {
           "Please select a vaccine.";
       }
     }
-    
+
     // Validate at least one service is selected
     if (selectedServices.length === 0) {
       errors.serviceIds = "Please select at least one service.";
@@ -711,14 +780,14 @@ const handleFormChange = (e) => {
     const vaccination =
       formData.type === "VACCINATION"
         ? {
-            vaccineItemId: formData.vaccineItemId,
-            vaccineName: formData.vaccineName.trim(),
-            pricePerDose: formData.vaccinePricePerDose !== "" ? Number(formData.vaccinePricePerDose) : null,
-            dose: formData.vaccineDose.trim() || null,
-            route: formData.vaccineRoute || null,
-            site: formData.vaccineSite.trim() || null,
-            notes: formData.vaccineNotes.trim() || null,
-          }
+          vaccineItemId: formData.vaccineItemId,
+          vaccineName: formData.vaccineName.trim(),
+          pricePerDose: formData.vaccinePricePerDose !== "" ? Number(formData.vaccinePricePerDose) : null,
+          dose: formData.vaccineDose.trim() || null,
+          route: formData.vaccineRoute || null,
+          site: formData.vaccineSite.trim() || null,
+          notes: formData.vaccineNotes.trim() || null,
+        }
         : undefined;
 
     const commonPayload = {
@@ -818,7 +887,7 @@ const handleFormChange = (e) => {
     } catch (requestError) {
       setFormError(
         requestError.message ||
-          "Unable to save appointment.",
+        "Unable to save appointment.",
       );
 
       setFieldErrors(
@@ -850,7 +919,7 @@ const handleFormChange = (e) => {
       setShowDetails(false);
       setError(
         requestError.message ||
-          "Unable to retrieve appointment.",
+        "Unable to retrieve appointment.",
       );
     } finally {
       setDetailsLoading(false);
@@ -888,7 +957,7 @@ const handleFormChange = (e) => {
     } catch (requestError) {
       setError(
         requestError.message ||
-          "Unable to update appointment status.",
+        "Unable to update appointment status.",
       );
     } finally {
       setActionLoading("");
@@ -937,7 +1006,7 @@ const handleFormChange = (e) => {
     } catch (requestError) {
       setError(
         requestError.message ||
-          "Unable to cancel appointment.",
+        "Unable to cancel appointment.",
       );
     } finally {
       setActionLoading("");
@@ -973,7 +1042,7 @@ const handleFormChange = (e) => {
     } catch (requestError) {
       setError(
         requestError.message ||
-          "Unable to delete appointment.",
+        "Unable to delete appointment.",
       );
     } finally {
       setActionLoading("");
@@ -1379,17 +1448,17 @@ const handleFormChange = (e) => {
                           </small>
                         </td>
 
-                       <td>
-  <div className="small fw-semibold">
-    {formatEnum(
-      appointment.type,
-    )}
-  </div>
+                        <td>
+                          <div className="small fw-semibold">
+                            {formatEnum(
+                              appointment.type,
+                            )}
+                          </div>
 
-  <small className="text-secondary">
-    {getServiceNames(appointment)}
-  </small>
-</td>
+                          <small className="text-secondary">
+                            {getServiceNames(appointment)}
+                          </small>
+                        </td>
 
                         <td>
                           <div className="small d-flex align-items-center gap-2">
@@ -1468,7 +1537,7 @@ const handleFormChange = (e) => {
                               }
                             >
                               {actionLoading ===
-                              `${appointment.id}:DELETE` ? (
+                                `${appointment.id}:DELETE` ? (
                                 <LoaderCircle
                                   size={16}
                                   className="spin-icon"
@@ -1759,6 +1828,7 @@ function AppointmentFormModal({
                   value={getOwnerName(
                     selectedPatient?.owner,
                   )}
+                  error={fieldErrors.ownerId}
                   readOnly
                   col="col-md-3"
                 />
@@ -2102,10 +2172,10 @@ function AppointmentDetailsModal({
                     }
                   />
 
-<DetailRow
-  label="Services"
-  value={getServiceNames(appointment) || "No service"}
-/>
+                  <DetailRow
+                    label="Services"
+                    value={getServiceNames(appointment) || "No service"}
+                  />
                 </DetailSection>
               </div>
 
@@ -2188,12 +2258,12 @@ function AppointmentDetailsModal({
                         action.status === "CANCELLED"
                           ? onCancel()
                           : onStatusChange(
-                              action.status,
-                            )
+                            action.status,
+                          )
                       }
                     >
                       {actionLoading ===
-                      `${appointment.id}:${action.status}` ? (
+                        `${appointment.id}:${action.status}` ? (
                         <LoaderCircle
                           size={15}
                           className="spin-icon"
@@ -2381,9 +2451,8 @@ function FormInput({
       </label>
 
       <input
-        className={`form-control ${
-          error ? "is-invalid" : ""
-        }`}
+        className={`form-control ${error ? "is-invalid" : ""
+          }`}
         {...inputProps}
       />
 
@@ -2417,9 +2486,8 @@ function FormSelect({
       </label>
 
       <select
-        className={`form-select ${
-          error ? "is-invalid" : ""
-        }`}
+        className={`form-select ${error ? "is-invalid" : ""
+          }`}
         {...selectProps}
       >
         {children}
@@ -2506,10 +2574,9 @@ function StatusBadge({ status }) {
 
   return (
     <span
-      className={`badge rounded-pill ${
-        classes[status] ||
+      className={`badge rounded-pill ${classes[status] ||
         "bg-light text-secondary"
-      }`}
+        }`}
     >
       {formatEnum(status)}
     </span>
@@ -2683,7 +2750,7 @@ function getUserName(user) {
 }
 function getServiceNames(appointment) {
   if (!appointment) return "";
-  
+
   // NEW FORMAT: appointment.services[] with service objects
   if (appointment.services?.length) {
     const names = appointment.services
@@ -2691,17 +2758,17 @@ function getServiceNames(appointment) {
       .filter(Boolean);
     if (names.length) return names.join(", ");
   }
-  
+
   // OLD FORMAT: Single service object
   if (appointment.service?.name) {
     return appointment.service.name;
   }
-  
+
   // Fallback: if serviceId exists but no service object
   if (appointment.serviceId && appointment.serviceName) {
     return appointment.serviceName;
   }
-  
+
   return "";
 }
 function formatEnum(value) {

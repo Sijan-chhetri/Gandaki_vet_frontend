@@ -97,41 +97,175 @@ function Services() {
   }
 
   function handleChange(event) {
-    const { name, value, type, checked } = event.target;
+    const {
+      name,
+      value,
+      type,
+      checked,
+    } = event.target;
+
+    let newValue =
+      type === "checkbox"
+        ? checked
+        : value;
+
+    /*
+     * Service name must not start with a number.
+     *
+     * Examples:
+     * Consultation     ✅
+     * Vaccination      ✅
+     * General Checkup  ✅
+     *
+     * 1 Consultation   ❌
+     * 2D Scan          ❌
+     */
+    if (
+      name === "name" &&
+      /^\d/.test(value.trimStart())
+    ) {
+      setFieldErrors((previous) => ({
+        ...previous,
+        name:
+          "Service name cannot start with a number.",
+      }));
+
+      return;
+    }
+
     setForm((previous) => ({
       ...previous,
-      [name]: type === "checkbox" ? checked : value,
+      [name]: newValue,
     }));
-    setFieldErrors((previous) => ({ ...previous, [name]: "" }));
+
+    setFieldErrors((previous) => ({
+      ...previous,
+      [name]: "",
+    }));
+
+    setFormError("");
   }
+
+
 
   async function handleSubmit(event) {
     event.preventDefault();
 
     try {
-      setSaving(true);
       setFormError("");
       setFieldErrors({});
 
+      const errors = {};
+
+      const serviceName =
+        form.name.trim();
+
+      const duration =
+        Number(form.durationMin);
+
+      const price =
+        Number(form.price);
+
+      /* ==========================================
+         SERVICE NAME VALIDATION
+      ========================================== */
+
+      if (!serviceName) {
+        errors.name =
+          "Service name is required.";
+      } else if (/^\d/.test(serviceName)) {
+        errors.name =
+          "Service name cannot start with a number.";
+      } else if (serviceName.length < 2) {
+        errors.name =
+          "Service name must be at least 2 characters.";
+      }
+
+      /* ==========================================
+         DURATION VALIDATION
+      ========================================== */
+
+      if (
+        !Number.isInteger(duration) ||
+        duration < 5 ||
+        duration > 480
+      ) {
+        errors.durationMin =
+          "Duration must be between 5 and 480 minutes.";
+      }
+
+      /* ==========================================
+         PRICE VALIDATION
+      ========================================== */
+
+      if (
+        Number.isNaN(price) ||
+        price < 0
+      ) {
+        errors.price =
+          "Price cannot be negative.";
+      }
+
+      /* ==========================================
+         STOP IF VALIDATION FAILS
+      ========================================== */
+
+      if (
+        Object.keys(errors).length > 0
+      ) {
+        setFieldErrors(errors);
+        setFormError(
+          "Please correct the highlighted fields.",
+        );
+        return;
+      }
+
+      setSaving(true);
+
+      /* ==========================================
+         PAYLOAD
+      ========================================== */
+
       const payload = {
-        code: form.code.trim(),
-        name: form.name.trim(),
-        durationMin: Number(form.durationMin),
-        price: Number(form.price),
+        name: serviceName,
+        durationMin: duration,
+        price,
         isActive: form.isActive,
       };
 
+      /*
+       * IMPORTANT:
+       *
+       * Do NOT send code while creating.
+       * Backend should auto generate it.
+       *
+       * When editing, we also do not change
+       * the existing code.
+       */
+
       if (editing) {
-        await serviceService.updateService(editing.id, payload);
+        await serviceService.updateService(
+          editing.id,
+          payload,
+        );
       } else {
-        await serviceService.createService(payload);
+        await serviceService.createService(
+          payload,
+        );
       }
 
       setShowForm(false);
+
       await loadData();
     } catch (requestError) {
-      setFormError(requestError.message || "Unable to save service.");
-      setFieldErrors(requestError.errors || {});
+      setFormError(
+        requestError.message ||
+        "Unable to save service.",
+      );
+
+      setFieldErrors(
+        requestError.errors || {},
+      );
     } finally {
       setSaving(false);
     }
@@ -270,11 +404,10 @@ function Services() {
                       <td>
                         <button
                           type="button"
-                          className={`btn btn-sm ${
-                            service.isActive
-                              ? "btn-success"
-                              : "btn-outline-secondary"
-                          }`}
+                          className={`btn btn-sm ${service.isActive
+                            ? "btn-success"
+                            : "btn-outline-secondary"
+                            }`}
                           onClick={() => toggleStatus(service)}
                         >
                           {service.isActive ? "Active" : "Inactive"}
@@ -376,11 +509,15 @@ function ServiceModal({
                   <Field
                     label="Code"
                     name="code"
-                    value={form.code}
-                    onChange={onChange}
-                    error={fieldErrors.code}
+                    value={
+                      editing
+                        ? form.code
+                        : ""
+                    }
+                    placeholder="Auto Generated"
+                    disabled
+                    readOnly
                     col="col-md-4"
-                    required
                   />
                   <Field
                     label="Service name"
