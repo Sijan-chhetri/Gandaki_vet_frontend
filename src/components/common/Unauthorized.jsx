@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  LogIn,
   ShieldAlert,
 } from "lucide-react";
 
@@ -8,19 +9,38 @@ import { useNavigate } from "react-router-dom";
 function Unauthorized() {
   const navigate = useNavigate();
 
+  const handleLogin = () => {
+    localStorage.removeItem("accessToken");
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+
+    navigate("/login", {
+      replace: true,
+    });
+  };
+
   return (
-    <div className="container py-5">
+    <div
+      className="
+        min-vh-100
+        d-flex
+        align-items-center
+        justify-content-center
+        bg-light
+        px-3
+      "
+    >
       <div
         className="
           card
           border-0
           shadow-sm
           rounded-4
-          mx-auto
           text-center
+          w-100
         "
         style={{
-          maxWidth: "560px",
+          maxWidth: "550px",
         }}
       >
         <div className="card-body p-5">
@@ -35,40 +55,67 @@ function Unauthorized() {
               mb-4
             "
             style={{
-              width: "72px",
-              height: "72px",
+              width: "75px",
+              height: "75px",
             }}
           >
-            <ShieldAlert size={34} />
+            <ShieldAlert size={36} />
           </div>
 
-          <h2 className="fw-bold">
-            Access denied
+          <h2 className="fw-bold mb-3">
+            Access Denied
           </h2>
 
           <p className="text-secondary mb-4">
-            Your account does not have
-            permission to access this page.
+            You are logged in, but your role
+            does not have permission to access
+            this page.
           </p>
 
-          <button
-            type="button"
+          <div
             className="
-              btn
-              btn-primary
-              d-inline-flex
-              align-items-center
+              d-flex
+              justify-content-center
+              flex-wrap
               gap-2
             "
-            onClick={() =>
-              navigate("/dashboard", {
-                replace: true,
-              })
-            }
           >
-            <ArrowLeft size={17} />
-            Return to dashboard
-          </button>
+            <button
+              type="button"
+              className="
+                btn
+                btn-primary
+                d-flex
+                align-items-center
+                gap-2
+              "
+              onClick={() =>
+                navigate("/dashboard", {
+                  replace: true,
+                })
+              }
+            >
+              <ArrowLeft size={17} />
+
+              Dashboard
+            </button>
+
+            <button
+              type="button"
+              className="
+                btn
+                btn-outline-secondary
+                d-flex
+                align-items-center
+                gap-2
+              "
+              onClick={handleLogin}
+            >
+              <LogIn size={17} />
+
+              Login as another user
+            </button>
+          </div>
         </div>
       </div>
     </div>

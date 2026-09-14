@@ -21,6 +21,7 @@ import Settings from "./components/setting/Settings";
 import CustomerSupport from "./components/customerSupport/CustomerSupport";
 import Services from "./components/services/Services";
 import Unauthorized from "./components/common/Unauthorized";
+import NotFound from "./components/common/NotFound";
 import PrescriptionForm from "./components/prescriptions/PrescriptionForm"
 
 import Login from "./auth/Login";
@@ -104,23 +105,7 @@ const INVENTORY_ROLES = [
   ROLES.INVENTORY_MANAGER,
 ];
 
-/* -------------------------------------------------------------------------- */
-/*                                Not found                                   */
-/* -------------------------------------------------------------------------- */
 
-function NotFound() {
-  return (
-    <div className="text-center py-5">
-      <h1 className="display-3 fw-bold">
-        404
-      </h1>
-
-      <p className="text-secondary">
-        Page not found.
-      </p>
-    </div>
-  );
-}
 
 /* -------------------------------------------------------------------------- */
 /*                                    App                                     */
@@ -129,14 +114,21 @@ function NotFound() {
 function App() {
   return (
     <Routes>
-      {/* Public route */}
+      {/* ================= PUBLIC ================= */}
 
       <Route
         path="/login"
         element={<Login />}
       />
 
-      {/* Authenticated application shell */}
+      {/* Role permission error */}
+
+      <Route
+        path="/unauthorized"
+        element={<Unauthorized />}
+      />
+
+      {/* ================= PROTECTED ================= */}
 
       <Route
         element={
@@ -147,7 +139,7 @@ function App() {
       >
         <Route element={<MainShell />}>
           <Route
-            path="/"
+            index
             element={
               <Navigate
                 to="/dashboard"
@@ -156,10 +148,8 @@ function App() {
             }
           />
 
-          {/* Dashboard */}
-
           <Route
-            path="/dashboard"
+            path="dashboard"
             element={<Dashboard />}
           />
 
@@ -175,7 +165,7 @@ function App() {
             }
           >
             <Route
-              path="/owners"
+              path="owners"
               element={<PetOwners />}
             />
           </Route>
@@ -192,7 +182,7 @@ function App() {
             }
           >
             <Route
-              path="/patients"
+              path="patients"
               element={<Patients />}
             />
           </Route>
@@ -209,29 +199,29 @@ function App() {
             }
           >
             <Route
-              path="/appointments"
+              path="appointments"
               element={<Appointments />}
             />
           </Route>
 
-
+          {/* Prescription */}
 
           <Route
             element={
               <ProtectedRoute
-                allowedRoles={
-                   ROLES.VETERINARIAN
-                }
+                allowedRoles={[
+                  ROLES.VETERINARIAN,
+                ]}
               />
             }
           >
-           <Route
-            path="prescriptions/new/:appointmentId"
-            element={<PrescriptionForm />}
-          />
+            <Route
+              path="prescriptions/new/:appointmentId"
+              element={
+                <PrescriptionForm />
+              }
+            />
           </Route>
-
-         
 
           {/* Services */}
 
@@ -245,7 +235,7 @@ function App() {
             }
           >
             <Route
-              path="/services"
+              path="services"
               element={<Services />}
             />
           </Route>
@@ -262,7 +252,7 @@ function App() {
             }
           >
             <Route
-              path="/staff"
+              path="staff"
               element={<StaffList />}
             />
           </Route>
@@ -279,7 +269,7 @@ function App() {
             }
           >
             <Route
-              path="/sales"
+              path="sales"
               element={<Sales />}
             />
           </Route>
@@ -296,7 +286,7 @@ function App() {
             }
           >
             <Route
-              path="/purchases"
+              path="purchases"
               element={<Purchases />}
             />
           </Route>
@@ -313,7 +303,7 @@ function App() {
             }
           >
             <Route
-              path="/event"
+              path="event"
               element={<Events />}
             />
           </Route>
@@ -330,7 +320,7 @@ function App() {
             }
           >
             <Route
-              path="/vaccination"
+              path="vaccination"
               element={<Vaccination />}
             />
           </Route>
@@ -347,7 +337,7 @@ function App() {
             }
           >
             <Route
-              path="/inventory"
+              path="inventory"
               element={<Inventory />}
             />
           </Route>
@@ -364,47 +354,23 @@ function App() {
             }
           >
             <Route
-              path="/settings"
+              path="settings"
               element={<Settings />}
             />
           </Route>
 
-          {/* Customer support */}
+          {/* Support */}
 
           <Route
+            path="support"
             element={
-              <ProtectedRoute
-                allowedRoles={
-                  ALL_ROLES
-                }
-              />
+              <CustomerSupport />
             }
-          >
-            <Route
-              path="/support"
-              element={
-                <CustomerSupport />
-              }
-            />
-          </Route>
-
-          {/* Unauthorized */}
-
-          <Route
-            path="/unauthorized"
-            element={<Unauthorized />}
-          />
-
-          {/* Protected 404 */}
-
-          <Route
-            path="*"
-            element={<NotFound />}
           />
         </Route>
       </Route>
 
-      {/* Public fallback */}
+      {/* ================= 404 ================= */}
 
       <Route
         path="*"
