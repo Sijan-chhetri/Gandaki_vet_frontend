@@ -23,7 +23,6 @@ import {
   Stethoscope,
   Trash2,
   UserRound,
-  XCircle,
 } from "lucide-react";
 
 import apiRequest from "../../services/api";
@@ -31,6 +30,7 @@ import appointmentService from "../../services/appointment.service";
 import patientService from "../../services/patient.service";
 import serviceService from "../../services/service.service";
 import vaccinationService from "../../services/vaccination.service.js";
+import ServiceMultiSelect from "../../components/ServiceMultiSelect";
 
 const APPOINTMENT_TYPES = [
   { value: "CONSULTATION", label: "Consultation" },
@@ -38,7 +38,7 @@ const APPOINTMENT_TYPES = [
   { value: "FOLLOW_UP", label: "Follow-up" },
   { value: "SURGERY", label: "Surgery" },
   { value: "EMERGENCY", label: "Emergency" },
-  { value: "DIAGNOSTIC", label: "Diagnostic" },
+  
   { value: "GROOMING", label: "Grooming" },
   { value: "OTHER", label: "Other" },
 ];
@@ -49,6 +49,8 @@ const APPOINTMENT_STATUSES = [
   "CHECKED_IN",
   "IN_PROGRESS",
   "COMPLETED",
+  "HOSPITALIZED",
+  "DISCHARGED",
   "CANCELLED",
   "NO_SHOW",
 ];
@@ -58,7 +60,7 @@ const initialFormData = {
   ownerId: "",
   petId: "",
   veterinarianId: "",
-  serviceId: "",
+  serviceIds: [],
   type: "CONSULTATION",
   scheduledDate: "",
   scheduledTime: "09:00",
@@ -102,6 +104,19 @@ const initialStats = {
   monthlyTotal: 0,
   byStatus: {},
 };
+
+function findVaccinationService(services = []) {
+  return services.find((service) => {
+    const name = String(service?.name || "").toLowerCase();
+    const code = String(service?.code || "").toLowerCase();
+    return (
+      name.includes("vaccination") ||
+      name.includes("vaccine") ||
+      code.includes("vaccination") ||
+      code.includes("vaccine")
+    );
+  }) || null;
+}
 
 function extractArray(result, keys = []) {
   const candidates = [
@@ -190,6 +205,7 @@ function Appointments() {
   const [formError, setFormError] = useState("");
   const [fieldErrors, setFieldErrors] =
     useState({});
+  const [selectedServices, setSelectedServices] = useState([]);
 
   const [loading, setLoading] = useState(true);
   const [optionsLoading, setOptionsLoading] =
@@ -209,6 +225,34 @@ function Appointments() {
       ) || null,
     [patients, formData.petId],
   );
+
+  // Handle service change - MOVED INSIDE COMPONENT
+  const handleServiceChange = (services) => {
+    const nextServices = services.slice(0, 2);
+    setSelectedServices(nextServices);
+
+    const totalDuration = nextServices.reduce(
+    (total, service) =>
+      total + Number(service.durationMin || 0),
+    0
+  );
+
+  setFormData((previous) => ({
+    ...previous,
+    serviceIds: nextServices.map((service) => service.id),
+    durationMin:
+      totalDuration > 0
+        ? String(totalDuration)
+        : "30",
+  }));
+
+  setFieldErrors((previous) => ({
+    ...previous,
+    serviceIds: "",
+  }));
+
+  setFormError("");
+};
 
   const loadAppointments = useCallback(
     async (page = 1) => {
@@ -318,14 +362,14 @@ function Appointments() {
           limit: 100,
           isActive: true,
           sortBy: "name",
-          sortOrder: "asc",
+          sortOrder: "desc",
         }),
 
         vaccinationService.getVaccineInventory({
           page: 1,
           limit: 100,
           sortBy: "name",
-          sortOrder: "asc",
+          sortOrder: "desc",
         }),
       ]);
 
@@ -370,6 +414,35 @@ function Appointments() {
     loadAppointments(1);
   }, [loadAppointments]);
 
+  // Keep the Vaccination service and duration synchronized after services load
+  // or when an admin changes the configured service duration in the database.
+  useEffect(() => {
+    if (formData.type !== "VACCINATION") return;
+
+    const vaccinationService = findVaccinationService(services);
+    if (!vaccinationService) return;
+
+    const nextServiceId = vaccinationService.id || "";
+    const nextDuration = String(vaccinationService.durationMin || 30);
+   setSelectedServices([vaccinationService]);
+    setFormData((previous) => {
+      if (
+        previous.type === "VACCINATION" &&
+        previous.serviceIds?.length === 1 &&
+        previous.serviceIds[0] === nextServiceId &&
+        previous.durationMin === nextDuration
+      ) {
+        return previous;
+      }
+
+      return {
+        ...previous,
+        serviceIds: [nextServiceId],
+        durationMin: nextDuration,
+      };
+    });
+  }, [services, formData.type]);
+
   function handleFilterChange(event) {
     const { name, value } = event.target;
 
@@ -400,146 +473,129 @@ function Appointments() {
     setAppliedFilters(emptyFilters);
   }
 
-  function handleFormChange(event) {
-    const { name, value } = event.target;
+const handleFormChange = (e) => {
+  const { name, value } = e.target;
 
-    setFormData((previous) => {
-      const selectedService =
-        name === "serviceId"
-          ? services.find(
-              (service) => service.id === value,
-            )
-          : null;
-      const selectedVaccine =
-        name === "vaccineItemId"
-          ? vaccines.find((vaccine) => vaccine.id === value)
-          : null;
+  setFieldErrors((previous) => ({
+    ...previous,
+    [name]: "",
+  }));
 
-      return {
+  setFormError("");
+
+  // Changing appointment type
+  if (name === "type") {
+    const vaccinationService =
+      findVaccinationService(services);
+
+    if (value === "VACCINATION" && vaccinationService) {
+      setSelectedServices([vaccinationService]);
+
+      setFormData((previous) => ({
         ...previous,
-        [name]: value,
-        ...(name === "mode"
-          ? value === "WALK_IN"
-            ? {
-                ownerId: "",
-                petId: "",
-                scheduledDate: "",
-                scheduledTime: "",
-              }
-            : {
-                walkInOwnerName: "",
-                walkInOwnerPhone: "",
-                walkInOwnerAddress: "",
-                walkInPetName: "",
-                walkInPetSpecies: "",
-                walkInPetBreed: "",
-                walkInPetGender: "",
-                walkInPetAge: "",
-                walkInPetWeight: "",
-              }
-          : {}),
-        ...(name === "petId"
-          ? {
-              ownerId:
-                patients.find(
-                  (patient) => patient.id === value,
-                )?.ownerId || "",
-            }
-          : {}),
-        ...(selectedService?.durationMin
-          ? {
-              durationMin: String(
-                selectedService.durationMin,
-              ),
-            }
-          : {}),
-        ...(name === "serviceId" && selectedService?.code === "VACCINATION"
-          ? { type: "VACCINATION" }
-          : {}),
-        ...(name === "vaccineItemId"
-          ? {
-              vaccineName: selectedVaccine?.name || "",
-              vaccinePricePerDose:
-                selectedVaccine?.sellingPrice ?? "",
-            }
-          : {}),
-      };
-    });
+        type: value,
+        serviceIds: [vaccinationService.id],
+        durationMin: String(
+          vaccinationService.durationMin || 30
+        ),
+        veterinarianId: "",
+      }));
 
-    setFieldErrors((previous) => ({
+      return;
+    }
+
+    // Switching away from vaccination
+    setSelectedServices([]);
+
+    setFormData((previous) => ({
       ...previous,
-      [name]: "",
+      type: value,
+      serviceIds: [],
+      durationMin: "30",
     }));
 
-    setFormError("");
+    return;
   }
 
+  // Handle vaccine selection - auto-fill name and price
+  if (name === "vaccineItemId") {
+    const selectedVaccine = vaccines.find(
+      (vaccine) => vaccine.id === value
+    );
+
+    setFormData((previous) => ({
+      ...previous,
+      vaccineItemId: value,
+      vaccineName: selectedVaccine?.name || "",
+      vaccinePricePerDose:
+        selectedVaccine?.sellingPrice ??
+        selectedVaccine?.price ??
+        "",
+    }));
+
+    return;
+  }
+
+  // Normal field change
+  setFormData((previous) => ({
+    ...previous,
+    [name]: value,
+  }));
+};
+
+  // ADD openAddForm function
   function openAddForm() {
     const now = new Date();
     const date = now.toISOString().slice(0, 10);
 
     setEditingAppointment(null);
+    setSelectedServices([]);
     setFormData({
       ...initialFormData,
       scheduledDate: date,
+      serviceIds: [],
     });
     setFieldErrors({});
     setFormError("");
     setShowForm(true);
   }
 
+  // ONLY ONE openEditForm function - KEEP THIS ONE
   function openEditForm(appointment) {
-    const scheduledAt = new Date(
-      appointment.scheduledAt,
-    );
+    const scheduledAt = new Date(appointment.scheduledAt);
+
+    // Extract services from appointment
+    const services = appointment.services?.map(aps => aps.service) || [];
+    setSelectedServices(services);
 
     setEditingAppointment(appointment);
     setFormData({
       mode: appointment.mode || "SCHEDULED",
       ownerId: appointment.ownerId || "",
       petId: appointment.petId || "",
-      veterinarianId:
-        appointment.veterinarianId || "",
-      serviceId: appointment.serviceId || "",
-      type:
-        appointment.type || "CONSULTATION",
-      scheduledDate: formatDateInput(
-        scheduledAt,
-      ),
-      scheduledTime: formatTimeInput(
-        scheduledAt,
-      ),
-      durationMin: String(
-        appointment.durationMin || 30,
-      ),
-      walkInOwnerName:
-        appointment.walkInOwnerName || "",
-      walkInOwnerPhone:
-        appointment.walkInOwnerPhone || "",
-      walkInOwnerAddress:
-        appointment.walkInOwnerAddress || "",
-      walkInPetName:
-        appointment.walkInPetName || "",
-      walkInPetSpecies:
-        appointment.walkInPetSpecies || "",
-      walkInPetBreed:
-        appointment.walkInPetBreed || "",
-      walkInPetGender:
-        appointment.walkInPetGender || "",
-      walkInPetAge:
-        appointment.walkInPetAge || "",
-      walkInPetWeight:
-        appointment.walkInPetWeight !== null &&
-        appointment.walkInPetWeight !== undefined
-          ? String(appointment.walkInPetWeight)
-          : "",
+      veterinarianId: appointment.veterinarianId || "",
+      serviceIds: services.map(s => s.id),
+      type: appointment.type || "CONSULTATION",
+      scheduledDate: formatDateInput(scheduledAt),
+      scheduledTime: formatTimeInput(scheduledAt),
+      durationMin: String(appointment.durationMin || 30),
+      walkInOwnerName: appointment.walkInOwnerName || "",
+      walkInOwnerPhone: appointment.walkInOwnerPhone || "",
+      walkInOwnerAddress: appointment.walkInOwnerAddress || "",
+      walkInPetName: appointment.walkInPetName || "",
+      walkInPetSpecies: appointment.walkInPetSpecies || "",
+      walkInPetBreed: appointment.walkInPetBreed || "",
+      walkInPetGender: appointment.walkInPetGender || "",
+      walkInPetAge: appointment.walkInPetAge || "",
+      walkInPetWeight: appointment.walkInPetWeight !== null && appointment.walkInPetWeight !== undefined
+        ? String(appointment.walkInPetWeight)
+        : "",
       reason: appointment.reason || "",
       symptoms: appointment.symptoms || "",
       notes: appointment.notes || "",
       vaccineItemId: appointment.vaccination?.vaccineItemId || "",
       vaccineName: appointment.vaccination?.vaccineName || "",
-      vaccinePricePerDose:
-        appointment.vaccination?.pricePerDose ?? "",
+      vaccinePricePerDose: appointment.vaccination?.pricePerDose ?? appointment.vaccination?.vaccineItem?.sellingPrice ?? "",
       vaccineDose: appointment.vaccination?.dose || "",
       vaccineRoute: appointment.vaccination?.route || "Subcutaneous",
       vaccineSite: appointment.vaccination?.site || "",
@@ -557,6 +613,7 @@ function Appointments() {
     setShowForm(false);
     setEditingAppointment(null);
     setFormData(initialFormData);
+    setSelectedServices([]);
     setFieldErrors({});
     setFormError("");
   }
@@ -621,23 +678,15 @@ function Appointments() {
     }
 
     if (formData.type === "VACCINATION") {
-      if (isWalkIn) {
-        errors.mode =
-          "Vaccination appointments require a registered pet.";
-      }
-
       if (!formData.vaccineItemId) {
         errors.vaccineItemId =
           "Please select a vaccine.";
       }
-
-      const selectedService = services.find(
-        (service) => service.id === formData.serviceId,
-      );
-      if (selectedService?.code !== "VACCINATION") {
-        errors.serviceId =
-          "Please select the Vaccination service.";
-      }
+    }
+    
+    // Validate at least one service is selected
+    if (selectedServices.length === 0) {
+      errors.serviceIds = "Please select at least one service.";
     }
 
     const duration = Number(
@@ -664,6 +713,7 @@ function Appointments() {
         ? {
             vaccineItemId: formData.vaccineItemId,
             vaccineName: formData.vaccineName.trim(),
+            pricePerDose: formData.vaccinePricePerDose !== "" ? Number(formData.vaccinePricePerDose) : null,
             dose: formData.vaccineDose.trim() || null,
             route: formData.vaccineRoute || null,
             site: formData.vaccineSite.trim() || null,
@@ -673,44 +723,31 @@ function Appointments() {
 
     const commonPayload = {
       mode: formData.mode,
-      veterinarianId:
-        formData.veterinarianId || null,
-      serviceId: formData.serviceId || null,
+      veterinarianId: formData.veterinarianId || null,
+      serviceIds: selectedServices.map(s => s.id),
       type: formData.type,
-      durationMin: Number(
-        formData.durationMin,
-      ),
+      durationMin: Number(formData.durationMin),
       reason: formData.reason.trim() || null,
-      symptoms:
-        formData.symptoms.trim() || null,
+      symptoms: formData.symptoms.trim() || null,
       notes: formData.notes.trim() || null,
     };
 
     if (isWalkIn) {
       return {
         ...commonPayload,
-        ownerId: null,
-        petId: null,
-        walkInOwnerName:
-          formData.walkInOwnerName.trim(),
-        walkInOwnerPhone:
-          formData.walkInOwnerPhone.trim(),
-        walkInOwnerAddress:
-          formData.walkInOwnerAddress.trim() || null,
-        walkInPetName:
-          formData.walkInPetName.trim(),
-        walkInPetSpecies:
-          formData.walkInPetSpecies.trim(),
-        walkInPetBreed:
-          formData.walkInPetBreed.trim() || null,
-        walkInPetGender:
-          formData.walkInPetGender || null,
-        walkInPetAge:
-          formData.walkInPetAge.trim() || null,
-        walkInPetWeight:
-          formData.walkInPetWeight !== ""
-            ? Number(formData.walkInPetWeight)
-            : null,
+        ownerId: formData.ownerId.trim() || null,
+        petId: formData.petId.trim() || null,
+        walkInOwnerName: formData.walkInOwnerName.trim(),
+        walkInOwnerPhone: formData.walkInOwnerPhone.trim(),
+        walkInOwnerAddress: formData.walkInOwnerAddress.trim() || null,
+        walkInPetName: formData.walkInPetName.trim(),
+        walkInPetSpecies: formData.walkInPetSpecies.trim(),
+        walkInPetBreed: formData.walkInPetBreed.trim() || null,
+        walkInPetGender: formData.walkInPetGender || null,
+        walkInPetAge: formData.walkInPetAge.trim() || null,
+        walkInPetWeight: formData.walkInPetWeight !== ""
+          ? Number(formData.walkInPetWeight)
+          : null,
         vaccination,
       };
     }
@@ -721,8 +758,8 @@ function Appointments() {
 
     return {
       ...commonPayload,
-      ownerId: formData.ownerId,
-      petId: formData.petId,
+      ownerId: formData.ownerId || selectedPatient?.owner?.id || null,
+      petId: formData.petId || selectedPatient?.id || null,
       scheduledAt: scheduledAt.toISOString(),
       walkInOwnerName: null,
       walkInOwnerPhone: null,
@@ -970,7 +1007,7 @@ function Appointments() {
         getOwnerName(appointment.owner) || appointment.walkInOwnerName || "",
         appointment.owner?.phone || appointment.walkInOwnerPhone || "",
         appointment.type,
-        appointment.service?.name || "",
+        getServiceNames(appointment) || "",
         getUserName(
           appointment.veterinarian,
         ),
@@ -1177,6 +1214,8 @@ function Appointments() {
                 value={filters.status}
                 onChange={handleFilterChange}
               >
+
+
                 <option value="">
                   All statuses
                 </option>
@@ -1340,18 +1379,17 @@ function Appointments() {
                           </small>
                         </td>
 
-                        <td>
-                          <div className="small fw-semibold">
-                            {formatEnum(
-                              appointment.type,
-                            )}
-                          </div>
+                       <td>
+  <div className="small fw-semibold">
+    {formatEnum(
+      appointment.type,
+    )}
+  </div>
 
-                          <small className="text-secondary">
-                            {appointment.service
-                              ?.name || "No service"}
-                          </small>
-                        </td>
+  <small className="text-secondary">
+    {getServiceNames(appointment)}
+  </small>
+</td>
 
                         <td>
                           <div className="small d-flex align-items-center gap-2">
@@ -1468,10 +1506,12 @@ function Appointments() {
           services={services}
           vaccines={vaccines}
           selectedPatient={selectedPatient}
+          selectedServices={selectedServices}
           fieldErrors={fieldErrors}
           formError={formError}
           submitting={submitting}
           onChange={handleFormChange}
+          onServiceChange={handleServiceChange}
           onSubmit={handleSubmit}
           onClose={closeForm}
         />
@@ -1530,10 +1570,12 @@ function AppointmentFormModal({
   services,
   vaccines,
   selectedPatient,
+  selectedServices,
   fieldErrors,
   formError,
   submitting,
   onChange,
+  onServiceChange,
   onSubmit,
   onClose,
 }) {
@@ -1744,16 +1786,11 @@ function AppointmentFormModal({
                 required
                 col="col-md-4"
               >
-                {APPOINTMENT_TYPES.map(
-                  (type) => (
-                    <option
-                      key={type.value}
-                      value={type.value}
-                    >
-                      {type.label}
-                    </option>
-                  ),
-                )}
+                {APPOINTMENT_TYPES.map((type) => (
+                  <option key={type.value} value={type.value}>
+                    {type.label}
+                  </option>
+                ))}
               </FormSelect>
 
               {!isWalkIn && (
@@ -1768,7 +1805,6 @@ function AppointmentFormModal({
                     required
                     col="col-md-3"
                   />
-
                   <FormInput
                     label="Time"
                     name="scheduledTime"
@@ -1793,6 +1829,7 @@ function AppointmentFormModal({
                 onChange={onChange}
                 error={fieldErrors.durationMin}
                 required
+                disabled={formData.type === "VACCINATION"}
                 col={isWalkIn ? "col-md-4" : "col-md-3"}
               />
 
@@ -1803,47 +1840,36 @@ function AppointmentFormModal({
                 onChange={onChange}
                 col="col-md-6"
               >
-                <option value="">
-                  Unassigned
-                </option>
-
+                <option value="">Unassigned</option>
                 {veterinarians.map((user) => (
-                  <option
-                    key={user.id}
-                    value={user.id}
-                  >
+                  <option key={user.id} value={user.id}>
                     {getUserName(user)}
-                    {user.specialization
-                      ? ` — ${user.specialization}`
-                      : ""}
+                    {user.specialization ? ` — ${user.specialization}` : ""}
                   </option>
                 ))}
               </FormSelect>
 
-              <FormSelect
-                label="Service"
-                name="serviceId"
-                value={formData.serviceId}
-                onChange={onChange}
-                error={fieldErrors.serviceId}
-                col="col-md-6"
-              >
-                <option value="">
-                  No service selected
-                </option>
-
-                {services.map((service) => (
-                  <option
-                    key={service.id}
-                    value={service.id}
-                  >
-                    {service.name}
-                    {service.durationMin
-                      ? ` — ${service.durationMin} min`
-                      : ""}
-                  </option>
-                ))}
-              </FormSelect>
+              {/* SERVICES MULTI-SELECT */}
+              <div className="col-12">
+                <label className="form-label">
+                  Services * (Select up to 2)
+                </label>
+                <ServiceMultiSelect
+                  selectedServices={selectedServices}
+                  onServicesChange={onServiceChange}
+                  services={services}
+                  disabled={formData.type === "VACCINATION"}
+                  error={fieldErrors.serviceIds}
+                />
+                {formData.type === "VACCINATION" && (
+                  <div className="alert alert-info mt-2">
+                    <small>
+                      💉 Vaccination service will be automatically added.
+                    </small>
+                  </div>
+                )}
+              </div>
+              {/* END OF SERVICES MULTI-SELECT */}
             </div>
           </FormSection>
 
@@ -1874,17 +1900,13 @@ function AppointmentFormModal({
                   name="vaccineName"
                   value={formData.vaccineName}
                   readOnly
-                  col="col-md-4"
+                  col="col-md-6"
                 />
 
                 <FormInput
                   label="Price per dose"
                   name="vaccinePricePerDose"
-                  value={
-                    formData.vaccinePricePerDose === ""
-                      ? ""
-                      : `Rs. ${Number(formData.vaccinePricePerDose).toFixed(2)}`
-                  }
+                  value={formData.vaccinePricePerDose}
                   readOnly
                   col="col-md-4"
                 />
@@ -2080,13 +2102,10 @@ function AppointmentDetailsModal({
                     }
                   />
 
-                  <DetailRow
-                    label="Service"
-                    value={
-                      appointment.service?.name ||
-                      "No service"
-                    }
-                  />
+<DetailRow
+  label="Services"
+  value={getServiceNames(appointment) || "No service"}
+/>
                 </DetailSection>
               </div>
 
@@ -2479,6 +2498,10 @@ function StatusBadge({ status }) {
       "bg-danger-subtle text-danger",
     NO_SHOW:
       "bg-dark-subtle text-dark",
+    HOSPITALIZED:
+      "bg-danger-subtle text-danger",
+    DISCHARGED:
+      "bg-success-subtle text-success",
   };
 
   return (
@@ -2584,6 +2607,12 @@ function getAvailableActions(status) {
 
     CHECKED_IN: [
       {
+        status: "HOSPITALIZED",
+        label: "Hospitalize",
+        className:
+          "btn btn-outline-danger btn-sm",
+      },
+      {
         status: "IN_PROGRESS",
         label: "Start visit",
         className:
@@ -2605,6 +2634,12 @@ function getAvailableActions(status) {
 
     IN_PROGRESS: [
       {
+        status: "HOSPITALIZED",
+        label: "Hospitalize",
+        className:
+          "btn btn-outline-danger btn-sm",
+      },
+      {
         status: "COMPLETED",
         label: "Complete",
         className:
@@ -2615,6 +2650,15 @@ function getAvailableActions(status) {
         label: "Cancel",
         className:
           "btn btn-outline-danger btn-sm",
+      },
+    ],
+
+    HOSPITALIZED: [
+      {
+        status: "DISCHARGED",
+        label: "Discharge",
+        className:
+          "btn btn-outline-success btn-sm",
       },
     ],
   };
@@ -2637,7 +2681,29 @@ function getUserName(user) {
     .filter(Boolean)
     .join(" ");
 }
-
+function getServiceNames(appointment) {
+  if (!appointment) return "";
+  
+  // NEW FORMAT: appointment.services[] with service objects
+  if (appointment.services?.length) {
+    const names = appointment.services
+      .map((item) => item.service?.name)
+      .filter(Boolean);
+    if (names.length) return names.join(", ");
+  }
+  
+  // OLD FORMAT: Single service object
+  if (appointment.service?.name) {
+    return appointment.service.name;
+  }
+  
+  // Fallback: if serviceId exists but no service object
+  if (appointment.serviceId && appointment.serviceName) {
+    return appointment.serviceName;
+  }
+  
+  return "";
+}
 function formatEnum(value) {
   if (!value) return "—";
 

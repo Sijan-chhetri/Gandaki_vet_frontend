@@ -270,8 +270,8 @@ export default function Inventory() {
           type: filters.type,
           stockStatus: filters.stockStatus,
           isActive: filters.isActive,
-          sortBy: "name",
-          sortOrder: "asc",
+          sortBy: "createdAt",
+          sortOrder: "desc",
         });
 
       setItems(result.data || []);

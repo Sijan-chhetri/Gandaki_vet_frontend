@@ -20,6 +20,7 @@ import {
   ShieldPlus,
   Stethoscope,
   Trash2,
+  X,
 } from "lucide-react";
 
 import appointmentService from "../../services/appointment.service";
@@ -30,7 +31,7 @@ const CLINIC = {
   name: "Pokhara Pet Hospital",
   subtitle: "Veterinary Clinic & Pet Care Centre",
   address: "Pokhara, Kaski, Nepal",
-  phone: "+977-XXXXXXXXXX",
+  phone: "+977-9802859465",
   email: "pokharapethouse@example.com",
   registration: "Clinic Reg. No.: __________",
 };
@@ -69,6 +70,14 @@ const emptyImaging = {
   views: "",
   priority: "ROUTINE",
   clinicalHistory: "",
+  result: {
+    status: "DRAFT",
+    resultDate: "",
+    performedBy: "",
+    findings: "",
+    impression: "",
+    recommendations: "",
+  },
 };
 
 const emptyVaccination = {
@@ -100,6 +109,66 @@ const CBC_TEMPLATE = [
   { key: "mpv", test: "MPV", unit: "fL", range: "7–12" },
 ];
 
+const CAT_CBC_TEMPLATE = [
+  { key: "wbc", test: "WBC", unit: "10³/µL", range: "5.5–19.5" },
+  { key: "neutrophils", test: "Neutrophils", unit: "%", range: "35–75" },
+  { key: "lymphocytes", test: "Lymphocytes", unit: "%", range: "20–55" },
+  { key: "monocytes", test: "Monocytes", unit: "%", range: "1–4" },
+  { key: "eosinophils", test: "Eosinophils", unit: "%", range: "2–12" },
+  { key: "basophils", test: "Basophils", unit: "%", range: "0–1" },
+  { key: "rbc", test: "RBC", unit: "10⁶/µL", range: "5.0–10.0" },
+  { key: "hemoglobin", test: "Haemoglobin", unit: "g/dL", range: "8–15" },
+  { key: "hematocrit", test: "Haematocrit / PCV", unit: "%", range: "24–45" },
+  { key: "mcv", test: "MCV", unit: "fL", range: "39–55" },
+  { key: "mch", test: "MCH", unit: "pg", range: "13–17" },
+  { key: "mchc", test: "MCHC", unit: "g/dL", range: "30–36" },
+  { key: "rdw", test: "RDW", unit: "%", range: "14–18" },
+  { key: "platelets", test: "Platelets", unit: "10³/µL", range: "300–800" },
+  { key: "mpv", test: "MPV", unit: "fL", range: "8–14" },
+];
+
+const NORMAL_PHYSICAL_EXAM_TEMPLATE =
+  "BAR, clinically healthy on examination, TPR WNL, MM pink/moist, CRT <2 sec, hydration adequate, cardiopulmonary auscultation unremarkable, no obvious clinical abnormalities. Fit for vaccination";
+
+const NORMAL_PHYSICAL_EXAM_TEMPLATES = {
+  DOG: NORMAL_PHYSICAL_EXAM_TEMPLATE,
+  CAT: NORMAL_PHYSICAL_EXAM_TEMPLATE,
+};
+
+function speciesKey(name) {
+  return String(name || "DOG").trim().toUpperCase();
+}
+
+function getCbcTemplateForSpecies(name) {
+  return speciesKey(name) === "CAT" ? CAT_CBC_TEMPLATE : CBC_TEMPLATE;
+}
+
+function getNormalPhysicalTemplate(name) {
+  return NORMAL_PHYSICAL_EXAM_TEMPLATES[speciesKey(name)] || NORMAL_PHYSICAL_EXAM_TEMPLATES.DOG;
+}
+
+function calculateBloodFlag(result, range) {
+  if (result === null || result === undefined || String(result).trim() === "") return "";
+  const value = Number(String(result).replace(/,/g, ""));
+  if (!Number.isFinite(value)) return "";
+
+  const text = String(range || "").replace(/,/g, "").trim();
+  const between = text.match(/^(-?\d+(?:\.\d+)?)\s*[–—-]\s*(-?\d+(?:\.\d+)?)$/);
+  if (between) {
+    const low = Number(between[1]);
+    const high = Number(between[2]);
+    return value < low ? "LOW" : value > high ? "HIGH" : "NORMAL";
+  }
+
+  const less = text.match(/^[<≤]\s*(-?\d+(?:\.\d+)?)$/);
+  if (less) return value <= Number(less[1]) ? "NORMAL" : "HIGH";
+
+  const greater = text.match(/^[>≥]\s*(-?\d+(?:\.\d+)?)$/);
+  if (greater) return value >= Number(greater[1]) ? "NORMAL" : "LOW";
+
+  return "";
+}
+
 const createBloodReport = () => ({
   reportDate: new Date().toISOString().slice(0, 10),
   sampleId: "",
@@ -111,7 +180,7 @@ const createBloodReport = () => ({
   reportedAt: "",
   technicianName: "",
   pathologistName: "",
-  rows: CBC_TEMPLATE.map((row) => ({ ...row, result: "", flag: "NORMAL" })),
+  rows: CBC_TEMPLATE.map((row) => ({ ...row, result: "", flag: "" })),
   smearFindings: "",
   interpretation: "",
   remarks: "",
@@ -122,15 +191,21 @@ const initialForm = {
   history: "",
   allergies: "",
   weightKg: "",
-  temperatureC: "",
+  temperatureF: "",
   pulseBpm: "",
   respirationRate: "",
   hydrationStatus: "",
   bodyConditionScore: "",
-  physicalExamination: "",
+  physicalExamination: NORMAL_PHYSICAL_EXAM_TEMPLATE,
+  physicalExamStatus: "NORMAL",
+  physicalExamTemplate: NORMAL_PHYSICAL_EXAM_TEMPLATE,
+  investigation: "",
+  investigationOther: "",
   diagnosis: "",
   differentialDiagnosis: "",
   treatmentPlan: "",
+  treatmentPlans: [],
+  hospitalized: false,
   advice: "",
   followUpDate: "",
   followUpNotes: "",
@@ -148,20 +223,32 @@ function PrescriptionForm() {
   const location = useLocation();
 
   const [activeTab, setActiveTab] = useState("general");
-  const [appointment, setAppointment] = useState(location.state?.appointment || null);
+  const [appointment, setAppointment] = useState(null);
   const [prescriptionId, setPrescriptionId] = useState(null);
   const [formData, setFormData] = useState(initialForm);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  
+  // 🔥 NEW: State for appointment status
+  const [appointmentStatus, setAppointmentStatus] = useState("");
 
-  const patientName = appointment?.pet?.name || "Patient";
+  const patientName =
+    appointment?.pet?.name ||
+    appointment?.walkInPetName ||
+    "Patient";
+
   const ownerName = useMemo(
     () =>
-      [appointment?.owner?.firstName, appointment?.owner?.lastName]
+      [
+        appointment?.owner?.firstName,
+        appointment?.owner?.lastName,
+      ]
         .filter(Boolean)
-        .join(" ") || "—",
+        .join(" ") ||
+      appointment?.walkInOwnerName ||
+      "—",
     [appointment],
   );
   const doctorName = getUserName(appointment?.veterinarian);
@@ -171,47 +258,77 @@ function PrescriptionForm() {
       try {
         setLoading(true);
         setError("");
+        setSuccess("");
 
-        const [appointmentResult, prescriptionResult] = await Promise.allSettled([
-          appointment
-            ? Promise.resolve({ data: appointment })
-            : appointmentService.getAppointmentById(appointmentId),
-          prescriptionService.getByAppointment(appointmentId),
-        ]);
-
-        if (appointmentResult.status === "fulfilled") {
-          setAppointment(appointmentResult.value?.data || appointmentResult.value);
-        } else {
-          throw appointmentResult.reason;
+        console.log("📋 Loading appointment:", appointmentId);
+        
+        const appointmentResult = await appointmentService.getAppointmentById(appointmentId);
+        
+        if (!appointmentResult?.data && !appointmentResult) {
+          throw new Error("Appointment not found.");
         }
+        
+        const appointmentData = appointmentResult?.data || appointmentResult;
+        setAppointment(appointmentData);
+        console.log("✅ Appointment loaded:", appointmentData?.appointmentNo);
 
-        if (prescriptionResult.status === "fulfilled") {
-          const existing = prescriptionResult.value?.data || prescriptionResult.value;
+        // Try to fetch existing prescription
+        try {
+          console.log("🔍 Checking for existing prescription...");
+          const prescriptionResult = await prescriptionService.getByAppointment(appointmentId);
+          const existing = prescriptionResult?.data || prescriptionResult;
+          
           if (existing?.id) {
+            console.log("✅ Existing prescription found:", existing.id);
             setPrescriptionId(existing.id);
             setFormData((previous) => ({
               ...previous,
               ...existing,
+              investigation: existing.investigation || existing.differentialDiagnosis || "",
+              investigationOther: existing.investigationOther || "",
               medicines: existing.medicines?.length
                 ? existing.medicines
                 : [{ ...emptyMedicine }],
+              temperatureF:
+                existing.temperatureC !== null && existing.temperatureC !== undefined && existing.temperatureC !== ""
+                  ? ((Number(existing.temperatureC) * 9) / 5 + 32).toFixed(1)
+                  : "",
+              physicalExamStatus: existing.physicalExamStatus || "NORMAL",
+              physicalExamTemplate:
+                existing.physicalExamTemplate || NORMAL_PHYSICAL_EXAM_TEMPLATE,
+              physicalExamination:
+                existing.physicalExamination ||
+                (existing.physicalExamStatus === "ABNORMAL" ? "" : NORMAL_PHYSICAL_EXAM_TEMPLATE),
+              treatmentPlans: Array.isArray(existing.treatmentPlans) && existing.treatmentPlans.length
+                ? existing.treatmentPlans
+                : (existing.treatmentPlan ? [{ date: new Date(existing.createdAt || Date.now()).toISOString().slice(0, 10), plan: existing.treatmentPlan }] : []),
+              hospitalized: existing.hospitalized === true || existing.appointment?.status === "HOSPITALIZED",
               bloodReport: existing.bloodReport
                 ? {
                   ...createBloodReport(),
                   ...existing.bloodReport,
                   rows: existing.bloodReport.rows?.length
-                    ? existing.bloodReport.rows
+                    ? existing.bloodReport.rows.map((row) => ({ ...row, flag: calculateBloodFlag(row.result, row.range) }))
                     : createBloodReport().rows,
                 }
-                : createBloodReport(),
+                : { ...createBloodReport(), rows: getCbcTemplateForSpecies((existing.appointment || appointmentData)?.pet?.species?.name).map((row) => ({ ...row, result: "", flag: "" })) },
               laboratoryTests: existing.laboratoryTests || [],
               imagingRequests: existing.imagingRequests || [],
               vaccinations: existing.vaccinations || [],
             }));
           }
+        } catch (prescriptionError) {
+          // ✅ 404 is expected if no prescription exists yet - this is normal!
+          if (prescriptionError?.status === 404) {
+            console.log(" No existing prescription found - opening new form");
+            setPrescriptionId(null);
+          } else {
+            console.warn(" Could not load existing prescription:", prescriptionError?.message);
+          }
         }
       } catch (requestError) {
-        setError(requestError?.message || "Unable to load prescription details.");
+        console.error(" Error loading page:", requestError);
+        setError(requestError?.message || "Unable to load appointment details.");
       } finally {
         setLoading(false);
       }
@@ -220,8 +337,40 @@ function PrescriptionForm() {
     loadPage();
   }, [appointmentId]);
 
+  useEffect(() => {
+    const species = appointment?.pet?.species?.name;
+    if (!species) return;
+    setFormData((previous) => ({
+      ...previous,
+      physicalExamTemplate: previous.physicalExamTemplate || getNormalPhysicalTemplate(species),
+      bloodReport: previous.bloodReport?.rows?.length
+        ? {
+          ...previous.bloodReport,
+          rows: previous.bloodReport.rows.map((row, index) => {
+            const template = getCbcTemplateForSpecies(species)[index] || row;
+            return { ...row, unit: row.unit || template.unit, range: row.range || template.range };
+          }),
+        }
+        : { ...createBloodReport(), rows: getCbcTemplateForSpecies(species).map((row) => ({ ...row, result: "", flag: "" })) },
+    }));
+  }, [appointment?.pet?.species?.name]);
+
   function updateField(event) {
     const { name, value } = event.target;
+
+    if (name === "physicalExamStatus") {
+      setFormData((previous) => ({
+        ...previous,
+        physicalExamStatus: value,
+        physicalExamination:
+          value === "NORMAL" ? NORMAL_PHYSICAL_EXAM_TEMPLATE : "",
+        physicalExamTemplate:
+          value === "NORMAL" ? NORMAL_PHYSICAL_EXAM_TEMPLATE : "",
+      }));
+      setSuccess("");
+      return;
+    }
+
     setFormData((previous) => ({ ...previous, [name]: value }));
     setSuccess("");
   }
@@ -262,11 +411,42 @@ function PrescriptionForm() {
       ...previous,
       bloodReport: {
         ...previous.bloodReport,
-        rows: previous.bloodReport.rows.map((row, rowIndex) =>
-          rowIndex === index ? { ...row, [field]: value } : row,
-        ),
+        rows: previous.bloodReport.rows.map((row, rowIndex) => {
+          if (rowIndex !== index) return row;
+          const next = { ...row, [field]: value };
+          if (field === "result" || field === "range") {
+            next.flag = calculateBloodFlag(next.result, next.range);
+          }
+          return next;
+        }),
       },
     }));
+  }
+
+  function addTreatmentPlan() {
+    const date = new Date().toISOString().slice(0, 10);
+    setFormData((previous) => ({
+      ...previous,
+      treatmentPlans: [...(previous.treatmentPlans || []), { date, plan: "" }],
+    }));
+  }
+
+  function updateTreatmentPlan(index, field, value) {
+    setFormData((previous) => {
+      const treatmentPlans = (previous.treatmentPlans || []).map((item, itemIndex) =>
+        itemIndex === index ? { ...item, [field]: value } : item,
+      );
+      const latest = treatmentPlans[treatmentPlans.length - 1];
+      return { ...previous, treatmentPlans, treatmentPlan: latest?.plan || "" };
+    });
+  }
+
+  function removeTreatmentPlan(index) {
+    setFormData((previous) => {
+      const treatmentPlans = (previous.treatmentPlans || []).filter((_, itemIndex) => itemIndex !== index);
+      const latest = treatmentPlans[treatmentPlans.length - 1];
+      return { ...previous, treatmentPlans, treatmentPlan: latest?.plan || "" };
+    });
   }
 
   function fail(tab, message) {
@@ -316,21 +496,41 @@ function PrescriptionForm() {
 
   async function savePrescription() {
     if (!validate()) return;
+    
     try {
       setSaving(true);
       setError("");
       setSuccess("");
-
+      
+      // 🔥 Get the selected status from the dropdown
+      const selectedStatus = appointmentStatus || null;
+      
+      console.log(" Saving prescription for appointment:", appointmentId);
+      console.log(" Form data:", formData);
+      console.log("Selected status:", selectedStatus);
+      
       const payload = {
         appointmentId,
         petId: appointment?.petId || appointment?.pet?.id,
         ownerId: appointment?.ownerId || appointment?.owner?.id,
         veterinarianId: appointment?.veterinarianId || appointment?.veterinarian?.id,
         ...formData,
+        investigation:
+          formData.investigation === "OTHER"
+            ? formData.investigationOther
+            : formData.investigation,
+        differentialDiagnosis:
+          formData.investigation === "OTHER"
+            ? formData.investigationOther
+            : formData.investigation,
         weightKg: formData.weightKg ? Number(formData.weightKg) : null,
-        temperatureC: formData.temperatureC
-          ? Number(formData.temperatureC)
+        temperatureC: formData.temperatureF
+          ? ((Number(formData.temperatureF) - 32) * 5) / 9
           : null,
+        hospitalized: Boolean(formData.hospitalized),
+        treatmentPlans: formData.treatmentPlans || [],
+        physicalExamStatus: formData.physicalExamStatus,
+        physicalExamTemplate: formData.physicalExamTemplate,
         pulseBpm: formData.pulseBpm ? Number(formData.pulseBpm) : null,
         respirationRate: formData.respirationRate
           ? Number(formData.respirationRate)
@@ -352,17 +552,44 @@ function PrescriptionForm() {
         vaccinations: formData.vaccinations.filter((item) =>
           String(item.vaccineName || "").trim(),
         ),
+        // 🔥 NEW: Include the selected status in the payload
+        appointmentStatus: selectedStatus,
       };
+
+      console.log("📤 Sending payload:", payload);
 
       const result = prescriptionId
         ? await prescriptionService.update(prescriptionId, payload)
         : await prescriptionService.create(payload);
 
+      console.log("Save response:", result);
+
       const saved = result?.data || result;
       setPrescriptionId(saved?.id || prescriptionId);
-      setSuccess("Prescription and blood report saved successfully.");
+      
+      // 🔥 REMOVED: The auto-hospitalize logic is now handled by the backend
+      // The backend will use the appointmentStatus from the payload
+      
+      setSuccess("Prescription and clinical record saved successfully.");
+      
+      // If we just created a new prescription, refresh the page data
+      if (!prescriptionId && saved?.id) {
+        console.log(" Refreshing data with new prescription ID:", saved.id);
+      }
+      
     } catch (requestError) {
-      setError(requestError?.message || "Unable to save prescription.");
+      console.error("❌ Save prescription error:", requestError);
+      console.error("❌ Full error details:", {
+        message: requestError?.message,
+        details: requestError?.response?.details || requestError?.details,
+        status: requestError?.status,
+      });
+      
+      const errorMessage = 
+        requestError?.response?.message || 
+        requestError?.message || 
+        "Unable to save prescription.";
+      setError(errorMessage);
     } finally {
       setSaving(false);
     }
@@ -412,13 +639,64 @@ function PrescriptionForm() {
       {success && <div className="alert alert-success d-flex align-items-center gap-2 screen-only"><CheckCircle2 size={18} />{success}</div>}
 
       <section className="prescription-patient-card screen-only">
-        <Info label="Patient" value={patientName} />
-        <Info label="Species" value={appointment?.pet?.species?.name} />
-        <Info label="Breed" value={appointment?.pet?.breed?.name || appointment?.pet?.breed} />
-        <Info label="Sex" value={appointment?.pet?.gender || appointment?.pet?.sex} />
-        <Info label="Owner" value={ownerName} />
-        <Info label="Phone" value={appointment?.owner?.phone} />
-        <Info label="Visit" value={formatDate(appointment?.scheduledAt)} />
+        <Info
+          label="Patient"
+          value={
+            appointment?.pet?.name ||
+            appointment?.walkInPetName ||
+            "—"
+          }
+        />
+
+        <Info
+          label="Species"
+          value={
+            appointment?.pet?.species?.name ||
+            appointment?.walkInPetSpecies ||
+            "—"
+          }
+        />
+
+        <Info
+          label="Breed"
+          value={
+            appointment?.pet?.breed?.name ||
+            appointment?.pet?.breed ||
+            appointment?.walkInPetBreed ||
+            "—"
+          }
+        />
+
+        <Info
+          label="Sex"
+          value={
+            appointment?.pet?.gender ||
+            appointment?.pet?.sex ||
+            appointment?.walkInPetGender ||
+            "—"
+          }
+        />
+
+        <Info
+          label="Owner"
+          value={
+            ownerName
+          }
+        />
+
+        <Info
+          label="Phone"
+          value={
+            appointment?.owner?.phone ||
+            appointment?.walkInOwnerPhone ||
+            "—"
+          }
+        />
+
+        <Info
+          label="Visit"
+          value={formatDate(appointment?.scheduledAt)}
+        />
         <Info label="Veterinarian" value={doctorName} />
       </section>
 
@@ -432,7 +710,18 @@ function PrescriptionForm() {
         </nav>
 
         <main className="prescription-panel">
-          {activeTab === "general" && <GeneralTab formData={formData} onChange={updateField} />}
+          {activeTab === "general" && (
+            <GeneralTab 
+              formData={formData} 
+              appointment={appointment} 
+              onChange={updateField} 
+              onTreatmentAdd={addTreatmentPlan} 
+              onTreatmentChange={updateTreatmentPlan} 
+              onTreatmentRemove={removeTreatmentPlan}
+              appointmentStatus={appointmentStatus}
+              setAppointmentStatus={setAppointmentStatus}
+            />
+          )}
           {activeTab === "medicines" && (
             <RepeatableSection title="Medicines" description="Add medicines when prescribed. Medicine name, dose and frequency are required only for entered medicines." icon={Pill} items={formData.medicines} template={emptyMedicine} collectionKey="medicines" onAdd={addArrayItem} onRemove={removeArrayItem} renderItem={(item, index) => <MedicineFields item={item} index={index} onChange={updateArrayItem} />} />
           )}
@@ -441,7 +730,12 @@ function PrescriptionForm() {
             <RepeatableSection title="Laboratory Requests" description="Add requested investigations when applicable." icon={FlaskConical} items={formData.laboratoryTests} template={emptyLab} collectionKey="laboratoryTests" onAdd={addArrayItem} onRemove={removeArrayItem} emptyLabel="No additional laboratory tests added." renderItem={(item, index) => <LabFields item={item} index={index} onChange={updateArrayItem} />} />
           )}
           {activeTab === "imaging" && (
-            <RepeatableSection title="Imaging Requests" description="Add imaging requests when applicable." icon={Image} items={formData.imagingRequests} template={emptyImaging} collectionKey="imagingRequests" onAdd={addArrayItem} onRemove={removeArrayItem} emptyLabel="No imaging requests added." renderItem={(item, index) => <ImagingFields item={item} index={index} onChange={updateArrayItem} />} />
+            <ImagingTab
+              items={formData.imagingRequests}
+              onAdd={addArrayItem}
+              onRemove={removeArrayItem}
+              onChange={updateArrayItem}
+            />
           )}
           {activeTab === "vaccination" && (
             <RepeatableSection title="Vaccinations" description="Record administered or planned vaccines." icon={ShieldPlus} items={formData.vaccinations} template={emptyVaccination} collectionKey="vaccinations" onAdd={addArrayItem} onRemove={removeArrayItem} emptyLabel="No vaccination added." renderItem={(item, index) => <VaccinationFields item={item} index={index} onChange={updateArrayItem} />} />
@@ -459,7 +753,43 @@ function PrescriptionForm() {
   );
 }
 
-function GeneralTab({ formData, onChange }) {
+// 🔥 UPDATED: GeneralTab with Status Management Dropdown
+function GeneralTab({ formData, appointment, onChange, onTreatmentAdd, onTreatmentChange, onTreatmentRemove, appointmentStatus, setAppointmentStatus }) {
+  // Get available status transitions based on current status
+  const getAvailableStatuses = (currentStatus) => {
+    const transitions = {
+      SCHEDULED: [
+        { value: "CONFIRMED", label: "Confirm Appointment" },
+        { value: "CANCELLED", label: " Cancel Appointment" },
+        { value: "NO_SHOW", label: "Mark as No Show" }
+      ],
+      CONFIRMED: [
+        { value: "CHECKED_IN", label: " Check In Patient" },
+        { value: "CANCELLED", label: " Cancel Appointment" },
+        { value: "NO_SHOW", label: "Mark as No Show" }
+      ],
+      CHECKED_IN: [
+        { value: "IN_PROGRESS", label: " Start Visit" },
+        { value: "CANCELLED", label: " Cancel Appointment" }
+      ],
+      IN_PROGRESS: [
+        { value: "COMPLETED", label: " Complete Appointment" },
+        { value: "HOSPITALIZED", label: " Hospitalize Patient" }
+      ],
+      HOSPITALIZED: [
+        { value: "DISCHARGED", label: " Discharge Patient" }
+      ],
+      COMPLETED: [],
+      CANCELLED: [],
+      NO_SHOW: [],
+      DISCHARGED: [],
+    };
+    return transitions[currentStatus] || [];
+  };
+
+  const availableStatuses = getAvailableStatuses(appointment?.status);
+  const currentStatus = appointment?.status || "SCHEDULED";
+
   return (
     <div className="d-grid gap-4">
       <SectionCard title="Clinical History" icon={Stethoscope}>
@@ -472,26 +802,250 @@ function GeneralTab({ formData, onChange }) {
       <SectionCard title="Vitals and Examination" icon={HeartPulse}>
         <div className="row g-3">
           <Field label="Weight (kg)" name="weightKg" type="number" min="0" step="0.01" value={formData.weightKg} onChange={onChange} col="col-6 col-lg-2" />
-          <Field label="Temperature (°C)" name="temperatureC" type="number" min="0" step="0.1" value={formData.temperatureC} onChange={onChange} col="col-6 col-lg-2" />
+          <Field label="Temperature (°F)" name="temperatureF" type="number" min="80" max="120" step="0.1" value={formData.temperatureF} onChange={onChange} col="col-6 col-lg-2" />
           <Field label="Pulse (bpm)" name="pulseBpm" type="number" min="0" value={formData.pulseBpm} onChange={onChange} col="col-6 col-lg-2" />
           <Field label="Respiration/min" name="respirationRate" type="number" min="0" value={formData.respirationRate} onChange={onChange} col="col-6 col-lg-2" />
           <Field label="Hydration" name="hydrationStatus" value={formData.hydrationStatus} onChange={onChange} col="col-6 col-lg-2" placeholder="Normal / 5%..." />
           <Field label="BCS (1–9)" name="bodyConditionScore" type="number" min="1" max="9" value={formData.bodyConditionScore} onChange={onChange} col="col-6 col-lg-2" />
-          <Field label="Physical examination" name="physicalExamination" value={formData.physicalExamination} onChange={onChange} col="col-12" textarea rows="4" />
+          <div className="col-12">
+            <label className="form-label fw-semibold small mb-2">Physical examination</label>
+            <div className="d-flex gap-3 mb-2">
+              <label className="form-check-label">
+                <input
+                  className="form-check-input me-1"
+                  type="radio"
+                  name="physicalExamStatus"
+                  value="NORMAL"
+                  checked={formData.physicalExamStatus === "NORMAL"}
+                  onChange={onChange}
+                />
+                Normal
+              </label>
+              <label className="form-check-label">
+                <input
+                  className="form-check-input me-1"
+                  type="radio"
+                  name="physicalExamStatus"
+                  value="ABNORMAL"
+                  checked={formData.physicalExamStatus === "ABNORMAL"}
+                  onChange={onChange}
+                />
+                Abnormal
+              </label>
+            </div>
+            <textarea
+              className="form-control"
+              rows="4"
+              name="physicalExamination"
+              value={formData.physicalExamination}
+              onChange={onChange}
+              placeholder={
+                formData.physicalExamStatus === "NORMAL"
+                  ? "Normal examination template will appear here..."
+                  : "Enter abnormal physical examination findings..."
+              }
+            />
+          </div>
         </div>
       </SectionCard>
       <SectionCard title="Assessment and Plan" icon={Beaker}>
         <div className="row g-3">
+          <div className="col-md-6">
+            <label className="form-label fw-semibold small">Investigation</label>
+            <select
+              className="form-select"
+              name="investigation"
+              value={formData.investigation}
+              onChange={onChange}
+            >
+              <option value="">Choose an investigation</option>
+              <option value="CBC">CBC / Complete Blood Count</option>
+              <option value="BLOOD_CHEMISTRY">Blood Chemistry</option>
+              <option value="URINALYSIS">Urinalysis</option>
+              <option value="FECAL_EXAMINATION">Fecal Examination</option>
+              <option value="SKIN_SCRAPING">Skin Scraping</option>
+              <option value="CYTOLOGY">Cytology</option>
+              <option value="BIOPSY">Biopsy</option>
+              <option value="X_RAY">X-Ray</option>
+              <option value="ULTRASOUND">Ultrasound</option>
+              <option value="CT_SCAN">CT Scan</option>
+              <option value="MRI">MRI</option>
+              <option value="ENDOSCOPY">Endoscopy</option>
+              <option value="ECG">ECG</option>
+              <option value="OTHER">Other</option>
+            </select>
+            {formData.investigation === "OTHER" && (
+              <input
+                className="form-control mt-2"
+                name="investigationOther"
+                value={formData.investigationOther}
+                onChange={onChange}
+                placeholder="Enter investigation name"
+              />
+            )}
+          </div>
           <Field required label="Diagnosis" name="diagnosis" value={formData.diagnosis} onChange={onChange} col="col-md-6" textarea />
-          <Field label="Differential diagnosis" name="differentialDiagnosis" value={formData.differentialDiagnosis} onChange={onChange} col="col-md-6" textarea />
-          <Field label="Treatment plan" name="treatmentPlan" value={formData.treatmentPlan} onChange={onChange} col="col-md-6" textarea />
-          <Field label="Advice / home care" name="advice" value={formData.advice} onChange={onChange} col="col-md-6" textarea />
-          <Field label="Follow-up date" name="followUpDate" type="date" value={formData.followUpDate} onChange={onChange} col="col-md-3" />
-          <Field label="Follow-up notes" name="followUpNotes" value={formData.followUpNotes} onChange={onChange} col="col-md-9" />
+          
+          {/* Treatment Plan - Always visible, but Add Plan button only for hospitalized */}
+          <div className="col-12">
+            <div className="d-flex align-items-center justify-content-between mb-2">
+              <label className="form-label fw-semibold small mb-0">Treatment Plan</label>
+              {formData.hospitalized && (
+                <button 
+                  type="button" 
+                  className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1" 
+                  onClick={onTreatmentAdd}
+                >
+                  <Plus size={15} /> Add Plan
+                </button>
+              )}
+            </div>
+            
+            {formData.hospitalized && (formData.treatmentPlans || []).length > 0 ? (
+              (formData.treatmentPlans || []).map((item, index) => (
+                <div className="border rounded p-2 mb-2" key={`treatment-${index}`}>
+                  <div className="d-flex gap-2 mb-2">
+                    <input 
+                      className="form-control form-control-sm" 
+                      type="date" 
+                      value={item.date || ""} 
+                      onChange={(e) => onTreatmentChange(index, "date", e.target.value)} 
+                    />
+                    <button 
+                      type="button" 
+                      className="btn btn-sm btn-outline-danger" 
+                      onClick={() => onTreatmentRemove(index)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                  <textarea 
+                    className="form-control" 
+                    rows="3" 
+                    value={item.plan || ""} 
+                    onChange={(e) => onTreatmentChange(index, "plan", e.target.value)} 
+                    placeholder="Treatment for this date..." 
+                  />
+                </div>
+              ))
+            ) : formData.hospitalized ? (
+              <div className="text-center text-secondary py-3 border rounded">
+                <small>No treatment plans added. Click "Add Plan" to create one.</small>
+              </div>
+            ) : (
+              <textarea 
+                className="form-control" 
+                rows="4" 
+                name="treatmentPlan" 
+                value={formData.treatmentPlan} 
+                onChange={onChange} 
+                placeholder="Enter treatment plan for this patient..." 
+              />
+            )}
+          </div>
+
+          {/* 🔥 NEW: Appointment Status Management */}
+          <div className="col-12">
+            <label className="form-label fw-semibold small">Appointment Status</label>
+            <div className="border rounded p-3">
+              <div className="row g-3 align-items-center">
+                <div className="col-md-6">
+                  <div className="d-flex align-items-center gap-3">
+                    <span className="text-muted">Current:</span>
+                    <span className={`badge bg-${getStatusColor(currentStatus)} fs-6 px-3 py-2`}>
+                      {formatStatus(currentStatus)}
+                    </span>
+                  </div>
+                </div>
+                <div className="col-md-6">
+                  {availableStatuses.length > 0 ? (
+                    <div className="d-flex flex-column gap-2">
+                      <label className="form-label small mb-0">Update Status (optional)</label>
+                      <select 
+                        className="form-select"
+                        value={appointmentStatus}
+                        onChange={(e) => setAppointmentStatus(e.target.value)}
+                      >
+                        <option value="">Keep current status</option>
+                        {availableStatuses.map((status) => (
+                          <option key={status.value} value={status.value}>
+                            {status.label}
+                          </option>
+                        ))}
+                      </select>
+                      <small className="text-muted">Select a status to update when saving</small>
+                    </div>
+                  ) : (
+                    <div className="text-muted text-center py-2">
+                      <small>No status changes available - this is a final state</small>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Patient care status - Full width to prevent overlapping */}
+          <div className="col-12">
+            <label className="form-label fw-semibold small">Patient care status</label>
+            <div className="border rounded p-3">
+              <label className="form-check d-flex align-items-center gap-2 mb-0">
+                <input 
+                  className="form-check-input" 
+                  type="checkbox" 
+                  name="hospitalized" 
+                  checked={Boolean(formData.hospitalized)} 
+                  onChange={(e) => onChange({ target: { name: "hospitalized", value: e.target.checked } })} 
+                />
+                <span className="fw-semibold">Hospitalized patient</span>
+              </label>
+              <small className="text-secondary d-block mt-2">When enabled, saving keeps the appointment in Hospitalized status and allows date-wise treatment plans.</small>
+            </div>
+          </div>
+
+          {/* Advice and Follow-up in separate row */}
+          <div className="col-12">
+            <div className="row g-3">
+              <Field label="Advice / home care" name="advice" value={formData.advice} onChange={onChange} col="col-md-6" textarea />
+              <Field label="Follow-up date" name="followUpDate" type="date" value={formData.followUpDate} onChange={onChange} col="col-md-3" />
+              <Field label="Follow-up notes" name="followUpNotes" value={formData.followUpNotes} onChange={onChange} col="col-md-3" />
+            </div>
+          </div>
         </div>
       </SectionCard>
     </div>
   );
+}
+
+// 🔥 Helper functions for status display
+function getStatusColor(status) {
+  const colors = {
+    SCHEDULED: 'secondary',
+    CONFIRMED: 'info',
+    CHECKED_IN: 'warning',
+    IN_PROGRESS: 'primary',
+    COMPLETED: 'success',
+    HOSPITALIZED: 'danger',
+    DISCHARGED: 'success',
+    CANCELLED: 'dark',
+    NO_SHOW: 'secondary',
+  };
+  return colors[status] || 'secondary';
+}
+
+function formatStatus(status) {
+  const labels = {
+    SCHEDULED: 'Scheduled',
+    CONFIRMED: 'Confirmed',
+    CHECKED_IN: 'Checked In',
+    IN_PROGRESS: 'In Progress',
+    COMPLETED: 'Completed',
+    HOSPITALIZED: 'Hospitalized',
+    DISCHARGED: 'Discharged',
+    CANCELLED: 'Cancelled',
+    NO_SHOW: 'No Show',
+  };
+  return labels[status] || status;
 }
 
 function BloodReportTab({ report, onMetaChange, onRowChange }) {
@@ -523,7 +1077,7 @@ function BloodReportTab({ report, onMetaChange, onRowChange }) {
                   <td><input className="form-control form-control-sm" value={row.result} onChange={(e) => onRowChange(index, "result", e.target.value)} /></td>
                   <td><input className="form-control form-control-sm" value={row.unit} onChange={(e) => onRowChange(index, "unit", e.target.value)} /></td>
                   <td><input className="form-control form-control-sm" value={row.range} onChange={(e) => onRowChange(index, "range", e.target.value)} /></td>
-                  <td><select className={`form-select form-select-sm blood-flag-${row.flag.toLowerCase()}`} value={row.flag} onChange={(e) => onRowChange(index, "flag", e.target.value)}><option value="LOW">Low</option><option value="NORMAL">Normal</option><option value="HIGH">High</option><option value="CRITICAL">Critical</option></select></td>
+                  <td><span className={`badge blood-flag-${String(row.flag || "NORMAL").toLowerCase()}`}>{row.flag ? formatEnum(row.flag) : "—"}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -549,8 +1103,133 @@ function RepeatableSection({ title, description, icon, items, template, collecti
 function MedicineFields({ item, index, onChange }) {
   return <div className="row g-3"><MiniField label="Medicine name" value={item.medicineName} onChange={(v) => onChange("medicines", index, "medicineName", v)} col="col-md-4" /><MiniField label="Strength" value={item.strength} onChange={(v) => onChange("medicines", index, "strength", v)} col="col-md-2" placeholder="250 mg" /><MiniField label="Dose" value={item.dosage} onChange={(v) => onChange("medicines", index, "dosage", v)} col="col-md-2" placeholder="1 tablet" /><MiniSelect label="Route" value={item.route} onChange={(v) => onChange("medicines", index, "route", v)} col="col-md-2" options={["ORAL", "IV", "IM", "SC", "TOPICAL", "OTIC", "OPHTHALMIC", "INHALATION", "OTHER"]} /><MiniField label="Quantity" value={item.quantity} onChange={(v) => onChange("medicines", index, "quantity", v)} col="col-md-2" /><MiniField label="Frequency" value={item.frequency} onChange={(v) => onChange("medicines", index, "frequency", v)} col="col-md-3" placeholder="Twice daily" /><MiniField label="Duration" value={item.duration} onChange={(v) => onChange("medicines", index, "duration", v)} col="col-md-3" placeholder="7 days" /><MiniField label="Instructions" value={item.instructions} onChange={(v) => onChange("medicines", index, "instructions", v)} col="col-md-6" placeholder="After food" /></div>;
 }
+
 function LabFields({ item, index, onChange }) { return <div className="row g-3"><MiniField label="Test / panel" value={item.testName} onChange={(v) => onChange("laboratoryTests", index, "testName", v)} col="col-md-4" /><MiniField label="Specimen" value={item.specimen} onChange={(v) => onChange("laboratoryTests", index, "specimen", v)} col="col-md-3" /><MiniSelect label="Priority" value={item.priority} onChange={(v) => onChange("laboratoryTests", index, "priority", v)} col="col-md-2" options={["ROUTINE", "URGENT", "STAT"]} /><MiniField label="Instructions" value={item.instructions} onChange={(v) => onChange("laboratoryTests", index, "instructions", v)} col="col-md-3" /></div>; }
-function ImagingFields({ item, index, onChange }) { return <div className="row g-3"><MiniSelect label="Imaging type" value={item.type} onChange={(v) => onChange("imagingRequests", index, "type", v)} col="col-md-2" options={["X_RAY", "ULTRASOUND", "CT", "MRI", "ENDOSCOPY", "OTHER"]} /><MiniField label="Body part" value={item.bodyPart} onChange={(v) => onChange("imagingRequests", index, "bodyPart", v)} col="col-md-3" /><MiniField label="Views / protocol" value={item.views} onChange={(v) => onChange("imagingRequests", index, "views", v)} col="col-md-2" /><MiniSelect label="Priority" value={item.priority} onChange={(v) => onChange("imagingRequests", index, "priority", v)} col="col-md-2" options={["ROUTINE", "URGENT", "STAT"]} /><MiniField label="Clinical history / question" value={item.clinicalHistory} onChange={(v) => onChange("imagingRequests", index, "clinicalHistory", v)} col="col-md-3" /></div>; }
+
+function ImagingTab({ items, onAdd, onRemove, onChange }) {
+  const [resultIndex, setResultIndex] = useState(null);
+
+  function openResult(index) {
+    setResultIndex(index);
+  }
+
+  function closeResult() {
+    setResultIndex(null);
+  }
+
+  function updateResult(index, field, value) {
+    const current = items[index]?.result || emptyImaging.result;
+    onChange("imagingRequests", index, "result", {
+      ...current,
+      [field]: value,
+    });
+  }
+
+  function addResult() {
+    const index = items.length;
+    onAdd("imagingRequests", emptyImaging);
+    setResultIndex(index);
+  }
+
+  return (
+    <>
+      <SectionCard
+        title="Imaging"
+        description="Add an imaging request and record the clinical result when the study is completed."
+        icon={Image}
+      >
+        <div className="imaging-toolbar">
+          <div>
+            <strong>Imaging studies</strong>
+            <p className="mb-0 text-secondary small">Requests and completed imaging results are kept together in the clinical record.</p>
+          </div>
+          <div className="d-flex flex-wrap gap-2">
+            <button type="button" className="btn btn-outline-primary d-flex align-items-center gap-2" onClick={() => onAdd("imagingRequests", emptyImaging)}>
+              <Plus size={16} /> Add Imaging Request
+            </button>
+            <button type="button" className="btn btn-primary d-flex align-items-center gap-2" onClick={addResult}>
+              <FileText size={16} /> Add Result
+            </button>
+          </div>
+        </div>
+
+        {items.length === 0 ? (
+          <div className="prescription-empty mt-3">
+            <Image size={28} className="mb-2 text-primary" />
+            <div className="fw-semibold">No imaging studies added</div>
+            <div className="small">Add an imaging request first, or use Add Result to start a result entry.</div>
+          </div>
+        ) : (
+          <div className="d-flex flex-column gap-3 mt-3">
+            {items.map((item, index) => (
+              <div className="prescription-repeat-card imaging-record-card" key={`imaging-${index}`}>
+                <div className="prescription-repeat-header">
+                  <div>
+                    <strong>Imaging {index + 1}</strong>
+                    <div className="small text-secondary">{formatEnum(item.type)}{item.bodyPart ? ` · ${item.bodyPart}` : ""}</div>
+                  </div>
+                  <div className="d-flex gap-2">
+                    <button type="button" className="btn btn-sm btn-primary d-flex align-items-center gap-1" onClick={() => openResult(index)}>
+                      <FileText size={14} /> {item.result?.findings || item.result?.impression ? "Edit Result" : "Add Result"}
+                    </button>
+                    <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => onRemove("imagingRequests", index)} aria-label={`Remove imaging ${index + 1}`}>
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </div>
+                <ImagingFields item={item} index={index} onChange={onChange} />
+                {(item.result?.findings || item.result?.impression) && (
+                  <div className="imaging-result-preview mt-3">
+                    <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
+                      <span className="badge rounded-pill bg-success-subtle text-success-emphasis">Result recorded</span>
+                      {item.result?.resultDate && <small className="text-secondary">{item.result.resultDate}</small>}
+                    </div>
+                    {item.result?.findings && <div><strong>Findings:</strong> {item.result.findings}</div>}
+                    {item.result?.impression && <div className="mt-1"><strong>Impression:</strong> {item.result.impression}</div>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
+
+      {resultIndex !== null && items[resultIndex] && (
+        <div className="imaging-result-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeResult(); }}>
+          <div className="imaging-result-modal" role="dialog" aria-modal="true" aria-labelledby="imaging-result-title">
+            <div className="imaging-result-modal-header">
+              <div>
+                <span className="small text-primary fw-semibold">IMAGING RESULT</span>
+                <h5 id="imaging-result-title" className="mb-0 mt-1">Add imaging result</h5>
+                <p className="mb-0 small text-secondary">{formatEnum(items[resultIndex].type)}{items[resultIndex].bodyPart ? ` · ${items[resultIndex].bodyPart}` : ""}</p>
+              </div>
+              <button type="button" className="btn btn-light border rounded-circle imaging-modal-close" onClick={closeResult} aria-label="Close result form"><X size={18} /></button>
+            </div>
+
+            <div className="row g-3">
+              <MiniSelect label="Result status" value={items[resultIndex].result?.status || "DRAFT"} onChange={(v) => updateResult(resultIndex, "status", v)} col="col-md-4" options={["DRAFT", "PRELIMINARY", "FINAL"]} />
+              <MiniField label="Result date" type="date" value={items[resultIndex].result?.resultDate || ""} onChange={(v) => updateResult(resultIndex, "resultDate", v)} col="col-md-4" />
+              <MiniField label="Performed / reported by" value={items[resultIndex].result?.performedBy || ""} onChange={(v) => updateResult(resultIndex, "performedBy", v)} col="col-md-4" placeholder="Veterinarian / radiologist" />
+              <MiniTextarea label="Findings" value={items[resultIndex].result?.findings || ""} onChange={(v) => updateResult(resultIndex, "findings", v)} col="col-12" required />
+              <MiniTextarea label="Impression / diagnosis" value={items[resultIndex].result?.impression || ""} onChange={(v) => updateResult(resultIndex, "impression", v)} col="col-12" />
+              <MiniTextarea label="Recommendations" value={items[resultIndex].result?.recommendations || ""} onChange={(v) => updateResult(resultIndex, "recommendations", v)} col="col-12" />
+            </div>
+
+            <div className="imaging-result-modal-footer">
+              <button type="button" className="btn btn-light border" onClick={closeResult}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={closeResult}>Save Result</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ImagingFields({ item, index, onChange }) {
+  return <div className="row g-3"><MiniSelect label="Imaging type" value={item.type} onChange={(v) => onChange("imagingRequests", index, "type", v)} col="col-md-2" options={["X_RAY", "ULTRASOUND", "CT", "MRI", "ENDOSCOPY", "OTHER"]} /><MiniField label="Body part" value={item.bodyPart} onChange={(v) => onChange("imagingRequests", index, "bodyPart", v)} col="col-md-3" /><MiniField label="Views / protocol" value={item.views} onChange={(v) => onChange("imagingRequests", index, "views", v)} col="col-md-2" /><MiniSelect label="Priority" value={item.priority} onChange={(v) => onChange("imagingRequests", index, "priority", v)} col="col-md-2" options={["ROUTINE", "URGENT", "STAT"]} /><MiniField label="Clinical history / question" value={item.clinicalHistory} onChange={(v) => onChange("imagingRequests", index, "clinicalHistory", v)} col="col-md-3" /></div>;
+}
+
 function VaccinationFields({ item, index, onChange }) { return <div className="row g-3"><MiniField label="Vaccine" value={item.vaccineName} onChange={(v) => onChange("vaccinations", index, "vaccineName", v)} col="col-md-3" /><MiniField label="Dose" value={item.dose} onChange={(v) => onChange("vaccinations", index, "dose", v)} col="col-md-2" /><MiniSelect label="Route" value={item.route} onChange={(v) => onChange("vaccinations", index, "route", v)} col="col-md-2" options={["SUBCUTANEOUS", "INTRAMUSCULAR", "INTRANASAL", "ORAL", "OTHER"]} /><MiniField label="Batch no." value={item.batchNo} onChange={(v) => onChange("vaccinations", index, "batchNo", v)} col="col-md-2" /><MiniField label="Manufacturer" value={item.manufacturer} onChange={(v) => onChange("vaccinations", index, "manufacturer", v)} col="col-md-3" /><MiniField label="Administered date" type="date" value={item.administeredDate} onChange={(v) => onChange("vaccinations", index, "administeredDate", v)} col="col-md-3" /><MiniField label="Next due date" type="date" value={item.nextDueDate} onChange={(v) => onChange("vaccinations", index, "nextDueDate", v)} col="col-md-3" /><MiniField label="Notes" value={item.notes} onChange={(v) => onChange("vaccinations", index, "notes", v)} col="col-md-6" /></div>; }
 
 function PrintablePrescription({ clinic, appointment, formData, patientName, ownerName, doctorName, prescriptionId }) {
@@ -562,6 +1241,8 @@ function PrintablePrescription({ clinic, appointment, formData, patientName, own
   );
 
   const hasBloodData =
+
+
     blood.rows.some((row) => String(row.result || "").trim()) ||
     [
       blood.sampleId,
@@ -584,8 +1265,8 @@ function PrintablePrescription({ clinic, appointment, formData, patientName, own
       <section className="print-info-grid">
         <PrintInfo label="Patient" value={patientName} /><PrintInfo label="Species" value={pet?.species?.name} /><PrintInfo label="Breed" value={pet?.breed?.name || pet?.breed} /><PrintInfo label="Sex" value={pet?.gender || pet?.sex} /><PrintInfo label="Age" value={pet?.age ? `${pet.age} years` : calculateAge(pet?.dateOfBirth)} /><PrintInfo label="Owner" value={ownerName} /><PrintInfo label="Phone" value={appointment?.owner?.phone} /><PrintInfo label="Visit date" value={formatDate(appointment?.scheduledAt)} /><PrintInfo label="Veterinarian" value={doctorName} /><PrintInfo label="Appointment No." value={appointment?.appointmentNo} />
       </section>
-      <PrintSection title="Clinical Summary"><PrintLine label="Chief complaint" value={formData.chiefComplaint} /><PrintLine label="History" value={formData.history} /><PrintLine label="Allergies" value={formData.allergies} /><div className="print-vitals"><PrintInfo label="Weight" value={`${formData.weightKg} kg`} /><PrintInfo label="Temperature" value={`${formData.temperatureC} °C`} /><PrintInfo label="Pulse" value={`${formData.pulseBpm} bpm`} /><PrintInfo label="Respiration" value={`${formData.respirationRate}/min`} /><PrintInfo label="Hydration" value={formData.hydrationStatus} /><PrintInfo label="BCS" value={`${formData.bodyConditionScore}/9`} /></div><PrintLine label="Physical examination" value={formData.physicalExamination} /></PrintSection>
-      <PrintSection title="Assessment"><PrintLine label="Diagnosis" value={formData.diagnosis} /><PrintLine label="Differential diagnosis" value={formData.differentialDiagnosis} /><PrintLine label="Treatment plan" value={formData.treatmentPlan} /></PrintSection>
+      <PrintSection title="Clinical Summary"><PrintLine label="Chief complaint" value={formData.chiefComplaint} /><PrintLine label="History" value={formData.history} /><PrintLine label="Allergies" value={formData.allergies} /><div className="print-vitals"><PrintInfo label="Weight" value={`${formData.weightKg} kg`} /><PrintInfo label="Temperature" value={`${formData.temperatureF} °F`} /><PrintInfo label="Pulse" value={`${formData.pulseBpm} bpm`} /><PrintInfo label="Respiration" value={`${formData.respirationRate}/min`} /><PrintInfo label="Hydration" value={formData.hydrationStatus} /><PrintInfo label="BCS" value={`${formData.bodyConditionScore}/9`} /></div><PrintLine label="Physical examination" value={formData.physicalExamination} /></PrintSection>
+      <PrintSection title="Assessment"><PrintLine label="Investigation" value={formData.investigation === "OTHER" ? formData.investigationOther : formData.investigation} /><PrintLine label="Diagnosis" value={formData.diagnosis} /><PrintLine label="Treatment plan" value={(formData.treatmentPlans || []).map((item) => `${item.date}: ${item.plan}`).join(" | ") || formData.treatmentPlan} /></PrintSection>
       {printableMedicines.length > 0 && (
         <PrintSection title="Prescription">
           <table className="print-table">
@@ -681,7 +1362,7 @@ function PrintablePrescription({ clinic, appointment, formData, patientName, own
         </PrintSection>
       )}
       {formData.laboratoryTests.length > 0 && <PrintSection title="Additional Laboratory Requests"><SimpleList items={formData.laboratoryTests.map(x => `${x.testName} — ${x.specimen} — ${formatEnum(x.priority)} — ${x.instructions}`)} /></PrintSection>}
-      {formData.imagingRequests.length > 0 && <PrintSection title="Imaging Requests"><SimpleList items={formData.imagingRequests.map(x => `${formatEnum(x.type)}: ${x.bodyPart}, ${x.views}; ${formatEnum(x.priority)}. ${x.clinicalHistory}`)} /></PrintSection>}
+      {formData.imagingRequests.length > 0 && <PrintSection title="Imaging Requests"><SimpleList items={formData.imagingRequests.map(x => { const result = x.result || {}; return `${formatEnum(x.type)}: ${x.bodyPart || ""}, ${x.views || ""}; ${formatEnum(x.priority)}. ${x.clinicalHistory || ""}${result.findings || result.impression ? ` Result — Findings: ${result.findings || "—"}; Impression: ${result.impression || "—"}.` : ""}`; })} /></PrintSection>}
       {formData.vaccinations.length > 0 && <PrintSection title="Vaccination Record"><SimpleList items={formData.vaccinations.map(x => `${x.vaccineName}, ${x.dose}, ${formatEnum(x.route)}, Batch ${x.batchNo}, ${x.manufacturer}, administered ${x.administeredDate}, next due ${x.nextDueDate}. ${x.notes}`)} /></PrintSection>}
       <PrintSection title="Advice and Follow-up"><PrintLine label="Home-care advice" value={formData.advice} /><PrintLine label="Follow-up" value={`${formData.followUpDate} — ${formData.followUpNotes}`} /><PrintLine label="Other reports / instructions" value={formData.otherReports} /></PrintSection>
       <section className="print-signatures"><div><div className="signature-line" /><strong>{blood.technicianName}</strong><small>Laboratory Technician</small></div><div><div className="signature-line" /><strong>{blood.pathologistName}</strong><small>Report Authorised By</small></div><div><div className="signature-line" /><strong>{doctorName}</strong><small>Veterinarian Signature & Stamp</small></div></section>
@@ -691,18 +1372,31 @@ function PrintablePrescription({ clinic, appointment, formData, patientName, own
 }
 
 function SectionCard({ title, description, icon: Icon = Bone, children }) { return <section className="prescription-section-card"><div className="prescription-section-heading"><div className="prescription-section-icon"><Icon size={20} /></div><div><h5>{title}</h5>{description && <p>{description}</p>}</div></div>{children}</section>; }
+
 function Field({ label, col = "col-12", textarea, required, ...props }) { const Component = textarea ? "textarea" : "input"; return <div className={col}><label className="form-label fw-semibold small">{label}{required && <span className="text-danger ms-1">*</span>}</label><Component className="form-control" required={required} rows={props.rows || (textarea ? 3 : undefined)} {...props} /></div>; }
+
 function MiniField({ label, value, onChange, col, type = "text", required, ...props }) { return <div className={col}><label className="form-label small fw-semibold">{label}{required && <span className="text-danger ms-1">*</span>}</label><input className="form-control" required={required} type={type} value={value || ""} onChange={(e) => onChange(e.target.value)} {...props} /></div>; }
+
 function MiniTextarea({ label, value, onChange, col, required }) { return <div className={col}><label className="form-label small fw-semibold">{label}{required && <span className="text-danger ms-1">*</span>}</label><textarea className="form-control" rows="4" required={required} value={value || ""} onChange={(e) => onChange(e.target.value)} /></div>; }
+
 function MiniSelect({ label, value, onChange, col, options, required }) { return <div className={col}><label className="form-label small fw-semibold">{label}{required && <span className="text-danger ms-1">*</span>}</label><select className="form-select" required={required} value={value} onChange={(e) => onChange(e.target.value)}>{options.map(o => <option key={o} value={o}>{formatEnum(o)}</option>)}</select></div>; }
+
 function Info({ label, value }) { return <div><small>{label}</small><strong>{value || "—"}</strong></div> }
+
 function PrintInfo({ label, value }) { return <div className="print-info"><small>{label}</small><strong>{value || "—"}</strong></div> }
+
 function PrintLine({ label, value }) { return <div className="print-line"><strong>{label}:</strong><span>{value || "—"}</span></div> }
+
 function PrintSection({ title, children }) { return <section className="print-section"><h3>{title}</h3>{children}</section> }
+
 function SimpleList({ items }) { return <ol className="print-list">{items.map((x, i) => <li key={i}>{x}</li>)}</ol> }
+
 function calculateAge(value) { if (!value) return "—"; const birth = new Date(value); const now = new Date(); const months = (now.getFullYear() - birth.getFullYear()) * 12 + now.getMonth() - birth.getMonth(); return months < 12 ? `${Math.max(months, 0)} months` : `${Math.floor(months / 12)} years ${months % 12} months`; }
+
 function formatDate(value) { if (!value) return "—"; return new Date(value).toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
+
 function getUserName(user) { return [user?.firstName, user?.lastName].filter(Boolean).join(" ") || "—"; }
+
 function formatEnum(value) { return String(value || "").toLowerCase().split("_").map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" "); }
 
 export default PrescriptionForm;

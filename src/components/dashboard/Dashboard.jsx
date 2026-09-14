@@ -56,6 +56,8 @@ const EMPTY_DASHBOARD = {
       upcoming: 0,
       periodTotal: 0,
       completedInPeriod: 0,
+      hospitalized: 0,
+      followUp: 0,
     },
 
     finance: {
@@ -90,6 +92,8 @@ const APPOINTMENT_STATUS_LABELS = {
   COMPLETED: "Completed",
   CANCELLED: "Cancelled",
   NO_SHOW: "No show",
+  HOSPITALIZED: "Hospitalized",
+  DISCHARGED: "Discharged",
 };
 
 const APPOINTMENT_STATUS_CLASSES = {
@@ -100,6 +104,8 @@ const APPOINTMENT_STATUS_CLASSES = {
   COMPLETED: "bg-success-subtle text-success",
   CANCELLED: "bg-danger-subtle text-danger",
   NO_SHOW: "bg-dark-subtle text-dark",
+  HOSPITALIZED: "bg-danger-subtle text-danger",
+  DISCHARGED: "bg-success-subtle text-success",
 };
 
 const PAYMENT_STATUS_CLASSES = {
@@ -788,6 +794,14 @@ function Dashboard() {
         appointments.completedInPeriod,
       ],
       [
+        "Hospitalized patients",
+        appointments.hospitalized,
+      ],
+      [
+        "Follow-up patients",
+        appointments.followUp,
+      ],
+      [
         "Total invoices",
         finance.invoices.total,
       ],
@@ -796,8 +810,8 @@ function Dashboard() {
         finance.invoices.paid,
       ],
       [
-        "Unpaid invoices",
-        finance.invoices.unpaid,
+        "Hospitalized patients",
+        appointments.hospitalized,
       ],
       [
         "Payment transactions",
@@ -808,8 +822,8 @@ function Dashboard() {
         finance.payments.revenue,
       ],
       [
-        "Low stock items",
-        inventory.lowStockItems,
+        "Follow-up patients",
+        appointments.followUp,
       ],
       [
         "Expiring batches",
@@ -1096,19 +1110,13 @@ function Dashboard() {
         />
 
         <MetricCard
-          title="Unpaid Invoices"
+          title="Hospitalized Patients"
           value={formatNumber(
-            finance.invoices.unpaid,
+            appointments.hospitalized,
           )}
-          subtitle={`${formatNumber(
-            finance.invoices.total,
-          )} invoices issued`}
-          icon={FileText}
-          tone={
-            finance.invoices.unpaid > 0
-              ? "warning"
-              : "success"
-          }
+          subtitle="Currently hospitalized"
+          icon={Stethoscope}
+          tone={appointments.hospitalized > 0 ? "warning" : "success"}
         />
       </div>
 
@@ -1218,13 +1226,12 @@ function Dashboard() {
               <div className="d-flex align-items-center justify-content-between">
                 <div>
                   <small className="text-secondary">
-                    Inventory Alerts
+                    Follow-up Patients
                   </small>
 
                   <h3 className="fw-bold mt-2 mb-0">
                     {formatNumber(
-                      inventory.lowStockItems +
-                        inventory.expiringBatches,
+                      appointments.followUp,
                     )}
                   </h3>
                 </div>
@@ -1236,18 +1243,10 @@ function Dashboard() {
 
               <div className="d-flex flex-column gap-1 mt-4">
                 <small className="text-secondary">
-                  {formatNumber(
-                    inventory.lowStockItems,
-                  )}{" "}
-                  low-stock items
+                  Patients marked for follow-up
                 </small>
-
                 <small className="text-secondary">
-                  {formatNumber(
-                    inventory.expiringBatches,
-                  )}{" "}
-                  batches expiring within 30
-                  days
+                  Includes active FOLLOW_UP appointments
                 </small>
               </div>
             </div>
@@ -1718,13 +1717,9 @@ function Dashboard() {
                 />
 
                 <ProgressItem
-                  label="Unpaid invoices"
-                  value={
-                    finance.invoices.unpaid
-                  }
-                  total={
-                    finance.invoices.total
-                  }
+                  label="Hospitalized patients"
+                  value={appointments.hospitalized}
+                  total={appointments.periodTotal || 1}
                   className="bg-warning"
                 />
               </div>
