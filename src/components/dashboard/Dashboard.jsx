@@ -1112,11 +1112,11 @@ function Dashboard() {
         <MetricCard
           title="Hospitalized Patients"
           value={formatNumber(
-            appointments.hospitalized,
+            appointmentStatuses.HOSPITALIZED,
           )}
           subtitle="Currently hospitalized"
           icon={Stethoscope}
-          tone={appointments.hospitalized > 0 ? "warning" : "success"}
+          tone={appointments.HOSPITALIZED > 0 ? "warning" : "success"}
         />
       </div>
 

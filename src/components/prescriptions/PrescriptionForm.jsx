@@ -135,6 +135,8 @@ const NORMAL_PHYSICAL_EXAM_TEMPLATES = {
   CAT: NORMAL_PHYSICAL_EXAM_TEMPLATE,
 };
 
+
+
 function speciesKey(name) {
   return String(name || "DOG").trim().toUpperCase();
 }
@@ -230,9 +232,10 @@ function PrescriptionForm() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  
+
   // 🔥 NEW: State for appointment status
   const [appointmentStatus, setAppointmentStatus] = useState("");
+  const [showStatusModal, setShowStatusModal] = useState(false);
 
   const patientName =
     appointment?.pet?.name ||
@@ -261,13 +264,13 @@ function PrescriptionForm() {
         setSuccess("");
 
         console.log("📋 Loading appointment:", appointmentId);
-        
+
         const appointmentResult = await appointmentService.getAppointmentById(appointmentId);
-        
+
         if (!appointmentResult?.data && !appointmentResult) {
           throw new Error("Appointment not found.");
         }
-        
+
         const appointmentData = appointmentResult?.data || appointmentResult;
         setAppointment(appointmentData);
         console.log("✅ Appointment loaded:", appointmentData?.appointmentNo);
@@ -277,7 +280,7 @@ function PrescriptionForm() {
           console.log("🔍 Checking for existing prescription...");
           const prescriptionResult = await prescriptionService.getByAppointment(appointmentId);
           const existing = prescriptionResult?.data || prescriptionResult;
-          
+
           if (existing?.id) {
             console.log("✅ Existing prescription found:", existing.id);
             setPrescriptionId(existing.id);
@@ -354,6 +357,21 @@ function PrescriptionForm() {
         : { ...createBloodReport(), rows: getCbcTemplateForSpecies(species).map((row) => ({ ...row, result: "", flag: "" })) },
     }));
   }, [appointment?.pet?.species?.name]);
+
+
+  function handleSaveClick() {
+    if (!validate()) return;
+
+    // Hospitalized checkbox has priority
+    if (formData.hospitalized) {
+      savePrescription("HOSPITALIZED");
+      return;
+    }
+
+    // Otherwise ask what status this appointment should have
+    setAppointmentStatus("");
+    setShowStatusModal(true);
+  }
 
   function updateField(event) {
     const { name, value } = event.target;
@@ -494,21 +512,25 @@ function PrescriptionForm() {
     return true;
   }
 
-  async function savePrescription() {
+  async function savePrescription(statusOverride = null) {
     if (!validate()) return;
-    
+
     try {
       setSaving(true);
       setError("");
       setSuccess("");
-      
+
       // 🔥 Get the selected status from the dropdown
-      const selectedStatus = appointmentStatus || null;
-      
+      const selectedStatus =
+        statusOverride ||
+        (formData.hospitalized
+          ? "HOSPITALIZED"
+          : appointmentStatus || null);
+
       console.log(" Saving prescription for appointment:", appointmentId);
       console.log(" Form data:", formData);
       console.log("Selected status:", selectedStatus);
-      
+
       const payload = {
         appointmentId,
         petId: appointment?.petId || appointment?.pet?.id,
@@ -562,21 +584,53 @@ function PrescriptionForm() {
         ? await prescriptionService.update(prescriptionId, payload)
         : await prescriptionService.create(payload);
 
-      console.log("Save response:", result);
-
       const saved = result?.data || result;
+
       setPrescriptionId(saved?.id || prescriptionId);
-      
-      // 🔥 REMOVED: The auto-hospitalize logic is now handled by the backend
-      // The backend will use the appointmentStatus from the payload
-      
-      setSuccess("Prescription and clinical record saved successfully.");
-      
+
+      /*
+      |--------------------------------------------------------------------------
+      | Update appointment status
+      |--------------------------------------------------------------------------
+      */
+
+      if (selectedStatus) {
+        console.log(
+          "Updating appointment status:",
+          appointmentId,
+          selectedStatus
+        );
+
+        await appointmentService.updateAppointmentStatus(
+          appointmentId,
+          selectedStatus
+        );
+
+        // Update the status shown on the page immediately
+        setAppointment((previous) => ({
+          ...previous,
+          status: selectedStatus,
+        }));
+
+        setAppointmentStatus("");
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | Success
+      |--------------------------------------------------------------------------
+      */
+
+      setSuccess(
+        selectedStatus === "HOSPITALIZED"
+          ? "Prescription saved and patient hospitalized successfully."
+          : "Prescription and clinical record saved successfully."
+      );
       // If we just created a new prescription, refresh the page data
       if (!prescriptionId && saved?.id) {
         console.log(" Refreshing data with new prescription ID:", saved.id);
       }
-      
+
     } catch (requestError) {
       console.error("❌ Save prescription error:", requestError);
       console.error("❌ Full error details:", {
@@ -584,10 +638,10 @@ function PrescriptionForm() {
         details: requestError?.response?.details || requestError?.details,
         status: requestError?.status,
       });
-      
-      const errorMessage = 
-        requestError?.response?.message || 
-        requestError?.message || 
+
+      const errorMessage =
+        requestError?.response?.message ||
+        requestError?.message ||
         "Unable to save prescription.";
       setError(errorMessage);
     } finally {
@@ -628,7 +682,7 @@ function PrescriptionForm() {
           <button type="button" className="btn btn-light border d-flex align-items-center gap-2" onClick={handlePrint}>
             <Printer size={17} /> Print / PDF
           </button>
-          <button type="button" className="btn btn-primary d-flex align-items-center gap-2" onClick={savePrescription} disabled={saving}>
+          <button type="button" className="btn btn-primary d-flex align-items-center gap-2" onClick={handleSaveClick} disabled={saving}>
             {saving ? <LoaderCircle size={17} className="prescription-spin" /> : <Save size={17} />}
             Save Prescription
           </button>
@@ -711,12 +765,12 @@ function PrescriptionForm() {
 
         <main className="prescription-panel">
           {activeTab === "general" && (
-            <GeneralTab 
-              formData={formData} 
-              appointment={appointment} 
-              onChange={updateField} 
-              onTreatmentAdd={addTreatmentPlan} 
-              onTreatmentChange={updateTreatmentPlan} 
+            <GeneralTab
+              formData={formData}
+              appointment={appointment}
+              onChange={updateField}
+              onTreatmentAdd={addTreatmentPlan}
+              onTreatmentChange={updateTreatmentPlan}
               onTreatmentRemove={removeTreatmentPlan}
               appointmentStatus={appointmentStatus}
               setAppointmentStatus={setAppointmentStatus}
@@ -749,6 +803,218 @@ function PrescriptionForm() {
       </div>
 
       <PrintablePrescription clinic={CLINIC} appointment={appointment} formData={formData} patientName={patientName} ownerName={ownerName} doctorName={doctorName} prescriptionId={prescriptionId} />
+
+      {showStatusModal && (
+        <div
+          className="modal fade show d-block"
+          tabIndex="-1"
+          style={{ backgroundColor: "rgba(15, 23, 42, 0.45)" }}
+        >
+          <div className="modal-dialog modal-dialog-centered">
+            <div
+              className="modal-content border-0"
+              style={{
+                borderRadius: "18px",
+                boxShadow: "0 20px 60px rgba(0,0,0,0.18)",
+                overflow: "hidden",
+              }}
+            >
+              {/* Header */}
+              <div className="modal-header border-0 px-4 pt-4 pb-2">
+                <div>
+                  <h5 className="modal-title fw-bold mb-1">
+                    Save Prescription
+                  </h5>
+
+                  <p className="text-secondary small mb-0">
+                    Choose the patient's current appointment status.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  className="btn-close"
+                  onClick={() => setShowStatusModal(false)}
+                  disabled={saving}
+                />
+              </div>
+
+              {/* Body */}
+              <div className="modal-body px-4 py-4">
+                <div className="d-grid gap-2">
+
+                  {/* Checked In */}
+                  <button
+                    type="button"
+                    className="btn text-start border bg-white p-3"
+                    disabled={saving}
+                    style={{
+                      borderRadius: "12px",
+                      transition: "all 0.2s ease",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = "#f8fafc";
+                      e.currentTarget.style.transform = "translateY(-1px)";
+                      e.currentTarget.style.boxShadow =
+                        "0 5px 15px rgba(0,0,0,0.06)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = "#fff";
+                      e.currentTarget.style.transform = "translateY(0)";
+                      e.currentTarget.style.boxShadow = "none";
+                    }}
+                    onClick={async () => {
+                      setShowStatusModal(false);
+                      await savePrescription("CHECKED_IN");
+                    }}
+                  >
+                    <div className="d-flex align-items-center justify-content-between">
+                      <div>
+                        <div className="fw-semibold mb-1">
+                          Checked In
+                        </div>
+
+                        <small className="text-secondary">
+                          Patient has arrived and is ready for consultation.
+                        </small>
+                      </div>
+
+                      <span
+                        className="d-flex align-items-center justify-content-center ms-3"
+                        style={{
+                          width: "34px",
+                          height: "34px",
+                          borderRadius: "50%",
+                          backgroundColor: "#f1f5f9",
+                          fontSize: "18px",
+                        }}
+                      >
+                        ›
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* In Progress */}
+                  <button
+                    type="button"
+                    className="btn text-start border bg-white p-3"
+                    disabled={saving}
+                    style={{
+                      borderRadius: "12px",
+                      transition: "all 0.2s ease",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = "#f8fafc";
+                      e.currentTarget.style.transform = "translateY(-1px)";
+                      e.currentTarget.style.boxShadow =
+                        "0 5px 15px rgba(0,0,0,0.06)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = "#fff";
+                      e.currentTarget.style.transform = "translateY(0)";
+                      e.currentTarget.style.boxShadow = "none";
+                    }}
+                    onClick={async () => {
+                      setShowStatusModal(false);
+                      await savePrescription("IN_PROGRESS");
+                    }}
+                  >
+                    <div className="d-flex align-items-center justify-content-between">
+                      <div>
+                        <div className="fw-semibold mb-1">
+                          In Progress
+                        </div>
+
+                        <small className="text-secondary">
+                          Consultation or treatment is currently ongoing.
+                        </small>
+                      </div>
+
+                      <span
+                        className="d-flex align-items-center justify-content-center ms-3"
+                        style={{
+                          width: "34px",
+                          height: "34px",
+                          borderRadius: "50%",
+                          backgroundColor: "#f1f5f9",
+                          fontSize: "18px",
+                        }}
+                      >
+                        ›
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* Completed */}
+                  <button
+                    type="button"
+                    className="btn text-start border bg-white p-3"
+                    disabled={saving}
+                    style={{
+                      borderRadius: "12px",
+                      transition: "all 0.2s ease",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = "#f8fafc";
+                      e.currentTarget.style.transform = "translateY(-1px)";
+                      e.currentTarget.style.boxShadow =
+                        "0 5px 15px rgba(0,0,0,0.06)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = "#fff";
+                      e.currentTarget.style.transform = "translateY(0)";
+                      e.currentTarget.style.boxShadow = "none";
+                    }}
+                    onClick={async () => {
+                      setShowStatusModal(false);
+                      await savePrescription("COMPLETED");
+                    }}
+                  >
+                    <div className="d-flex align-items-center justify-content-between">
+                      <div>
+                        <div className="fw-semibold mb-1">
+                          Completed
+                        </div>
+
+                        <small className="text-secondary">
+                          Consultation is finished and the patient can leave.
+                        </small>
+                      </div>
+
+                      <span
+                        className="d-flex align-items-center justify-content-center ms-3"
+                        style={{
+                          width: "34px",
+                          height: "34px",
+                          borderRadius: "50%",
+                          backgroundColor: "#f1f5f9",
+                          fontSize: "18px",
+                        }}
+                      >
+                        ›
+                      </span>
+                    </div>
+                  </button>
+
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="modal-footer border-0 px-4 pt-0 pb-4">
+                <button
+                  type="button"
+                  className="btn btn-light border px-4"
+                  style={{ borderRadius: "10px" }}
+                  onClick={() => setShowStatusModal(false)}
+                  disabled={saving}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -885,46 +1151,46 @@ function GeneralTab({ formData, appointment, onChange, onTreatmentAdd, onTreatme
             )}
           </div>
           <Field required label="Diagnosis" name="diagnosis" value={formData.diagnosis} onChange={onChange} col="col-md-6" textarea />
-          
+
           {/* Treatment Plan - Always visible, but Add Plan button only for hospitalized */}
           <div className="col-12">
             <div className="d-flex align-items-center justify-content-between mb-2">
               <label className="form-label fw-semibold small mb-0">Treatment Plan</label>
               {formData.hospitalized && (
-                <button 
-                  type="button" 
-                  className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1" 
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1"
                   onClick={onTreatmentAdd}
                 >
                   <Plus size={15} /> Add Plan
                 </button>
               )}
             </div>
-            
+
             {formData.hospitalized && (formData.treatmentPlans || []).length > 0 ? (
               (formData.treatmentPlans || []).map((item, index) => (
                 <div className="border rounded p-2 mb-2" key={`treatment-${index}`}>
                   <div className="d-flex gap-2 mb-2">
-                    <input 
-                      className="form-control form-control-sm" 
-                      type="date" 
-                      value={item.date || ""} 
-                      onChange={(e) => onTreatmentChange(index, "date", e.target.value)} 
+                    <input
+                      className="form-control form-control-sm"
+                      type="date"
+                      value={item.date || ""}
+                      onChange={(e) => onTreatmentChange(index, "date", e.target.value)}
                     />
-                    <button 
-                      type="button" 
-                      className="btn btn-sm btn-outline-danger" 
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-danger"
                       onClick={() => onTreatmentRemove(index)}
                     >
                       <Trash2 size={14} />
                     </button>
                   </div>
-                  <textarea 
-                    className="form-control" 
-                    rows="3" 
-                    value={item.plan || ""} 
-                    onChange={(e) => onTreatmentChange(index, "plan", e.target.value)} 
-                    placeholder="Treatment for this date..." 
+                  <textarea
+                    className="form-control"
+                    rows="3"
+                    value={item.plan || ""}
+                    onChange={(e) => onTreatmentChange(index, "plan", e.target.value)}
+                    placeholder="Treatment for this date..."
                   />
                 </div>
               ))
@@ -933,13 +1199,13 @@ function GeneralTab({ formData, appointment, onChange, onTreatmentAdd, onTreatme
                 <small>No treatment plans added. Click "Add Plan" to create one.</small>
               </div>
             ) : (
-              <textarea 
-                className="form-control" 
-                rows="4" 
-                name="treatmentPlan" 
-                value={formData.treatmentPlan} 
-                onChange={onChange} 
-                placeholder="Enter treatment plan for this patient..." 
+              <textarea
+                className="form-control"
+                rows="4"
+                name="treatmentPlan"
+                value={formData.treatmentPlan}
+                onChange={onChange}
+                placeholder="Enter treatment plan for this patient..."
               />
             )}
           </div>
@@ -961,7 +1227,7 @@ function GeneralTab({ formData, appointment, onChange, onTreatmentAdd, onTreatme
                   {availableStatuses.length > 0 ? (
                     <div className="d-flex flex-column gap-2">
                       <label className="form-label small mb-0">Update Status (optional)</label>
-                      <select 
+                      <select
                         className="form-select"
                         value={appointmentStatus}
                         onChange={(e) => setAppointmentStatus(e.target.value)}
@@ -990,12 +1256,12 @@ function GeneralTab({ formData, appointment, onChange, onTreatmentAdd, onTreatme
             <label className="form-label fw-semibold small">Patient care status</label>
             <div className="border rounded p-3">
               <label className="form-check d-flex align-items-center gap-2 mb-0">
-                <input 
-                  className="form-check-input" 
-                  type="checkbox" 
-                  name="hospitalized" 
-                  checked={Boolean(formData.hospitalized)} 
-                  onChange={(e) => onChange({ target: { name: "hospitalized", value: e.target.checked } })} 
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  name="hospitalized"
+                  checked={Boolean(formData.hospitalized)}
+                  onChange={(e) => onChange({ target: { name: "hospitalized", value: e.target.checked } })}
                 />
                 <span className="fw-semibold">Hospitalized patient</span>
               </label>
