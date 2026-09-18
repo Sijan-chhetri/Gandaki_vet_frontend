@@ -127,6 +127,68 @@ const CAT_CBC_TEMPLATE = [
   { key: "mpv", test: "MPV", unit: "fL", range: "8–14" },
 ];
 
+// ─── Serum Biochemistry (Pokhara Pet Hospital reference) ───────────
+const BIOCHEMISTRY_PANELS = [
+  {
+    id: "LFT",
+    label: "LFT — Liver / Hepatobiliary Profile",
+    parameters: [
+      { key: "totalProtein", test: "Total Protein", unit: "g/dL", dog: "5.4–7.5", cat: "6.0–7.9" },
+      { key: "albumin", test: "Albumin", unit: "g/dL", dog: "2.3–3.1", cat: "2.8–3.9" },
+      { key: "globulin", test: "Globulin", unit: "g/dL", dog: "2.7–4.4", cat: "2.6–5.1" },
+      { key: "agRatio", test: "A/G ratio", unit: "—", dog: "Calculate*", cat: "Calculate*" },
+      { key: "totalBilirubin", test: "Total Bilirubin", unit: "mg/dL", dog: "0–0.3", cat: "0–0.1" },
+      { key: "directBilirubin", test: "Direct Bilirubin", unit: "mg/dL", dog: "Lab-specific", cat: "Lab-specific" },
+      { key: "indirectBilirubin", test: "Indirect Bilirubin", unit: "mg/dL", dog: "Lab-specific", cat: "Lab-specific" },
+      { key: "alt", test: "ALT / SGPT", unit: "U/L", dog: "10–109", cat: "25–97" },
+      { key: "ast", test: "AST / SGOT", unit: "U/L", dog: "13–15", cat: "7–38" },
+      { key: "alp", test: "ALP / ALKP", unit: "U/L", dog: "1–114", cat: "0–45" },
+      { key: "cholesterol", test: "Cholesterol", unit: "mg/dL", dog: "135–278", cat: "71–156" },
+    ],
+  },
+  {
+    id: "KFT",
+    label: "KFT — Renal Function Profile",
+    parameters: [
+      { key: "bun", test: "Urea nitrogen (BUN)", unit: "mg/dL", dog: "8–28", cat: "19–34" },
+      { key: "creatinine", test: "Creatinine", unit: "mg/dL", dog: "0.5–1.7", cat: "0.9–2.2" },
+    ],
+  },
+  {
+    id: "ELECTROLYTES",
+    label: "Electrolytes & Mineral Profile",
+    parameters: [
+      { key: "sodium", test: "Sodium (Na)", unit: "mEq/L", dog: "142–152", cat: "146–156" },
+      { key: "potassium", test: "Potassium (K)", unit: "mEq/L", dog: "3.9–5.1", cat: "3.7–6.1" },
+      { key: "chloride", test: "Chloride (Cl)", unit: "mEq/L", dog: "110–124", cat: "115–130" },
+      { key: "calcium", test: "Calcium", unit: "mg/dL", dog: "9.1–11.7", cat: "8.7–11.7" },
+    ],
+  },
+  {
+    id: "OTHER",
+    label: "Other Biochemistry",
+    parameters: [
+      { key: "glucose", test: "Glucose", unit: "mg/dL", dog: "76–119", cat: "60–120" },
+      { key: "creatineKinase", test: "Creatine Kinase (CK)", unit: "U/L", dog: "52–368", cat: "69–214" },
+    ],
+  },
+];
+
+function buildBiochemistryRows(species) {
+  const sp = speciesKey(species) === "CAT" ? "cat" : "dog";
+  return BIOCHEMISTRY_PANELS.flatMap((panel) =>
+    panel.parameters.map((p) => ({
+      key: `${panel.id}_${p.key}`,
+      panel: panel.id,
+      test: p.test,
+      unit: p.unit,
+      range: p[sp] || "",
+      result: "",
+      flag: "",
+    }))
+  );
+}
+
 const NORMAL_PHYSICAL_EXAM_TEMPLATE =
   "BAR, clinically healthy on examination, TPR WNL, MM pink/moist, CRT <2 sec, hydration adequate, cardiopulmonary auscultation unremarkable, no obvious clinical abnormalities. Fit for vaccination";
 
@@ -134,8 +196,6 @@ const NORMAL_PHYSICAL_EXAM_TEMPLATES = {
   DOG: NORMAL_PHYSICAL_EXAM_TEMPLATE,
   CAT: NORMAL_PHYSICAL_EXAM_TEMPLATE,
 };
-
-
 
 function speciesKey(name) {
   return String(name || "DOG").trim().toUpperCase();
@@ -183,6 +243,14 @@ const createBloodReport = () => ({
   technicianName: "",
   pathologistName: "",
   rows: CBC_TEMPLATE.map((row) => ({ ...row, result: "", flag: "" })),
+  biochemistry: {
+    enabled: false,
+    reportDate: "",
+    sampleId: "",
+    specimen: "Serum",
+    analyser: "",
+    rows: buildBiochemistryRows("DOG"),
+  },
   smearFindings: "",
   interpretation: "",
   remarks: "",
@@ -233,7 +301,7 @@ function PrescriptionForm() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  // 🔥 NEW: State for appointment status
+  //  NEW: State for appointment status
   const [appointmentStatus, setAppointmentStatus] = useState("");
   const [showStatusModal, setShowStatusModal] = useState(false);
 
@@ -313,8 +381,23 @@ function PrescriptionForm() {
                   rows: existing.bloodReport.rows?.length
                     ? existing.bloodReport.rows.map((row) => ({ ...row, flag: calculateBloodFlag(row.result, row.range) }))
                     : createBloodReport().rows,
+                  biochemistry: {
+                    ...createBloodReport().biochemistry,
+                    ...(existing.bloodReport.biochemistry || {}),
+                    rows: existing.bloodReport.biochemistry?.rows?.length
+                      ? existing.bloodReport.biochemistry.rows.map((row) => ({
+                        ...row,
+                        flag: calculateBloodFlag(row.result, row.range),
+                      }))
+                      : buildBiochemistryRows(
+                        (existing.appointment || appointmentData)?.pet?.species?.name
+                      ),
+                  },
                 }
-                : { ...createBloodReport(), rows: getCbcTemplateForSpecies((existing.appointment || appointmentData)?.pet?.species?.name).map((row) => ({ ...row, result: "", flag: "" })) },
+                : {
+                  ...createBloodReport(),
+                  rows: getCbcTemplateForSpecies((existing.appointment || appointmentData)?.pet?.species?.name).map((row) => ({ ...row, result: "", flag: "" })),
+                },
               laboratoryTests: existing.laboratoryTests || [],
               imagingRequests: existing.imagingRequests || [],
               vaccinations: existing.vaccinations || [],
@@ -353,8 +436,23 @@ function PrescriptionForm() {
             const template = getCbcTemplateForSpecies(species)[index] || row;
             return { ...row, unit: row.unit || template.unit, range: row.range || template.range };
           }),
+          biochemistry: previous.bloodReport?.biochemistry?.enabled
+            ? {
+              ...previous.bloodReport.biochemistry,
+              rows: previous.bloodReport.biochemistry.rows.map((row) => {
+                const panel = BIOCHEMISTRY_PANELS.find((p) => p.id === row.panel);
+                const param = panel?.parameters.find((p) => row.key === `${panel.id}_${p.key}`);
+                if (!param) return row;
+                const range = speciesKey(species) === "CAT" ? param.cat : param.dog;
+                return { ...row, range, flag: calculateBloodFlag(row.result, range) };
+              }),
+            }
+            : previous.bloodReport?.biochemistry,
         }
-        : { ...createBloodReport(), rows: getCbcTemplateForSpecies(species).map((row) => ({ ...row, result: "", flag: "" })) },
+        : {
+          ...createBloodReport(),
+          rows: getCbcTemplateForSpecies(species).map((row) => ({ ...row, result: "", flag: "" })),
+        },
     }));
   }, [appointment?.pet?.species?.name]);
 
@@ -441,6 +539,58 @@ function PrescriptionForm() {
     }));
   }
 
+  // ── NEW: Biochemistry handlers ─────────────────────────────
+  function updateBiochemMeta(field, value) {
+    setFormData((previous) => ({
+      ...previous,
+      bloodReport: {
+        ...previous.bloodReport,
+        biochemistry: {
+          ...previous.bloodReport.biochemistry,
+          [field]: value,
+        },
+      },
+    }));
+  }
+
+  function toggleBiochemistry(enabled) {
+    setFormData((previous) => {
+      const species = appointment?.pet?.species?.name || "DOG";
+      const existing = previous.bloodReport.biochemistry;
+      const rows = existing.rows?.length
+        ? existing.rows
+        : buildBiochemistryRows(species);
+
+      return {
+        ...previous,
+        bloodReport: {
+          ...previous.bloodReport,
+          biochemistry: { ...existing, enabled, rows },
+        },
+      };
+    });
+  }
+
+  function updateBiochemRow(index, field, value) {
+    setFormData((previous) => ({
+      ...previous,
+      bloodReport: {
+        ...previous.bloodReport,
+        biochemistry: {
+          ...previous.bloodReport.biochemistry,
+          rows: previous.bloodReport.biochemistry.rows.map((row, i) => {
+            if (i !== index) return row;
+            const next = { ...row, [field]: value };
+            if (field === "result" || field === "range") {
+              next.flag = calculateBloodFlag(next.result, next.range);
+            }
+            return next;
+          }),
+        },
+      },
+    }));
+  }
+
   function addTreatmentPlan() {
     const date = new Date().toISOString().slice(0, 10);
     setFormData((previous) => ({
@@ -520,7 +670,7 @@ function PrescriptionForm() {
       setError("");
       setSuccess("");
 
-      // 🔥 Get the selected status from the dropdown
+      //  Get the selected status from the dropdown
       const selectedStatus =
         statusOverride ||
         (formData.hospitalized
@@ -574,7 +724,7 @@ function PrescriptionForm() {
         vaccinations: formData.vaccinations.filter((item) =>
           String(item.vaccineName || "").trim(),
         ),
-        // 🔥 NEW: Include the selected status in the payload
+        //  NEW: Include the selected status in the payload
         appointmentStatus: selectedStatus,
       };
 
@@ -779,7 +929,16 @@ function PrescriptionForm() {
           {activeTab === "medicines" && (
             <RepeatableSection title="Medicines" description="Add medicines when prescribed. Medicine name, dose and frequency are required only for entered medicines." icon={Pill} items={formData.medicines} template={emptyMedicine} collectionKey="medicines" onAdd={addArrayItem} onRemove={removeArrayItem} renderItem={(item, index) => <MedicineFields item={item} index={index} onChange={updateArrayItem} />} />
           )}
-          {activeTab === "blood" && <BloodReportTab report={formData.bloodReport} onMetaChange={updateBloodMeta} onRowChange={updateBloodRow} />}
+          {activeTab === "blood" && (
+            <BloodReportTab
+              report={formData.bloodReport}
+              onMetaChange={updateBloodMeta}
+              onRowChange={updateBloodRow}
+              onBiochemMetaChange={updateBiochemMeta}
+              onBiochemRowChange={updateBiochemRow}
+              onToggleBiochem={toggleBiochemistry}
+            />
+          )}
           {activeTab === "laboratory" && (
             <RepeatableSection title="Laboratory Requests" description="Add requested investigations when applicable." icon={FlaskConical} items={formData.laboratoryTests} template={emptyLab} collectionKey="laboratoryTests" onAdd={addArrayItem} onRemove={removeArrayItem} emptyLabel="No additional laboratory tests added." renderItem={(item, index) => <LabFields item={item} index={index} onChange={updateArrayItem} />} />
           )}
@@ -1019,7 +1178,7 @@ function PrescriptionForm() {
   );
 }
 
-// 🔥 UPDATED: GeneralTab with Status Management Dropdown
+//  UPDATED: GeneralTab with Status Management Dropdown
 function GeneralTab({ formData, appointment, onChange, onTreatmentAdd, onTreatmentChange, onTreatmentRemove, appointmentStatus, setAppointmentStatus }) {
   // Get available status transitions based on current status
   const getAvailableStatuses = (currentStatus) => {
@@ -1210,7 +1369,7 @@ function GeneralTab({ formData, appointment, onChange, onTreatmentAdd, onTreatme
             )}
           </div>
 
-          {/* 🔥 NEW: Appointment Status Management */}
+          {/*  NEW: Appointment Status Management */}
           <div className="col-12">
             <label className="form-label fw-semibold small">Appointment Status</label>
             <div className="border rounded p-3">
@@ -1283,7 +1442,7 @@ function GeneralTab({ formData, appointment, onChange, onTreatmentAdd, onTreatme
   );
 }
 
-// 🔥 Helper functions for status display
+//  Helper functions for status display
 function getStatusColor(status) {
   const colors = {
     SCHEDULED: 'secondary',
@@ -1314,7 +1473,10 @@ function formatStatus(status) {
   return labels[status] || status;
 }
 
-function BloodReportTab({ report, onMetaChange, onRowChange }) {
+//  UPDATED: BloodReportTab now includes Serum Biochemistry
+function BloodReportTab({ report, onMetaChange, onRowChange, onBiochemMetaChange, onBiochemRowChange, onToggleBiochem }) {
+  const biochem = report.biochemistry || { enabled: false, rows: [] };
+
   return (
     <div className="d-grid gap-4">
       <SectionCard title="CBC Sample and Report Details" description="Optional manual CBC report. Reference ranges can be edited according to species, analyser and laboratory SOP." icon={Microscope}>
@@ -1349,6 +1511,83 @@ function BloodReportTab({ report, onMetaChange, onRowChange }) {
             </tbody>
           </table>
         </div>
+      </SectionCard>
+
+      {/*  NEW: Serum Biochemistry section */}
+      <SectionCard
+        title="Serum Biochemistry"
+        description="LFT, KFT, electrolytes and other biochemistry. Reference intervals vary with analyser and laboratory — verify against your SOP."
+        icon={Beaker}
+      >
+        <div className="form-check form-switch mb-3">
+          <input
+            className="form-check-input"
+            type="checkbox"
+            id="biochem-enabled"
+            checked={biochem.enabled}
+            onChange={(e) => onToggleBiochem(e.target.checked)}
+          />
+          <label className="form-check-label fw-semibold" htmlFor="biochem-enabled">
+            Include serum biochemistry in this report
+          </label>
+        </div>
+
+        {biochem.enabled && (
+          <>
+            <div className="row g-3 mb-3">
+              <MiniField label="Report date" type="date" value={biochem.reportDate || ""} onChange={(v) => onBiochemMetaChange("reportDate", v)} col="col-md-3" />
+              <MiniField label="Sample ID" value={biochem.sampleId || ""} onChange={(v) => onBiochemMetaChange("sampleId", v)} col="col-md-3" />
+              <MiniField label="Specimen" value={biochem.specimen || ""} onChange={(v) => onBiochemMetaChange("specimen", v)} col="col-md-3" placeholder="Serum / Plasma" />
+              <MiniField label="Analyser" value={biochem.analyser || ""} onChange={(v) => onBiochemMetaChange("analyser", v)} col="col-md-3" placeholder="e.g. ERBA XL-640" />
+            </div>
+
+            {BIOCHEMISTRY_PANELS.map((panel) => {
+              const panelRows = (biochem.rows || [])
+                .map((row, index) => ({ ...row, index }))
+                .filter((row) => row.panel === panel.id);
+
+              if (!panelRows.length) return null;
+
+              return (
+                <div key={panel.id} className="biochem-panel mb-4">
+                  <h6 className="biochem-panel-heading">{panel.label}</h6>
+                  <div className="table-responsive blood-report-table-wrap">
+                    <table className="table align-middle blood-report-table">
+                      <thead><tr><th>Parameter</th><th>Result</th><th>Unit</th><th>Reference range</th><th>Flag</th></tr></thead>
+                      <tbody>
+                        {panelRows.map((row) => (
+                          <tr key={row.key}>
+                            <td>
+                              <input className="form-control form-control-sm" value={row.test} onChange={(e) => onBiochemRowChange(row.index, "test", e.target.value)} />
+                            </td>
+                            <td>
+                              <input className="form-control form-control-sm" value={row.result} onChange={(e) => onBiochemRowChange(row.index, "result", e.target.value)} />
+                            </td>
+                            <td>
+                              <input className="form-control form-control-sm" value={row.unit} onChange={(e) => onBiochemRowChange(row.index, "unit", e.target.value)} />
+                            </td>
+                            <td>
+                              <input className="form-control form-control-sm" value={row.range} onChange={(e) => onBiochemRowChange(row.index, "range", e.target.value)} />
+                            </td>
+                            <td>
+                              <span className={`badge blood-flag-${String(row.flag || "NORMAL").toLowerCase()}`}>
+                                {row.flag ? formatEnum(row.flag) : "—"}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
+
+            <div className="alert alert-light border small mb-0">
+              <strong>Note:</strong> Reference values are species-specific (Dog / Cat). Change rows if your analyser reports a different interval. Ranges marked <em>Lab-specific</em> or <em>Calculate*</em> need manual flagging.
+            </div>
+          </>
+        )}
       </SectionCard>
 
       <SectionCard title="Microscopy and Interpretation" icon={Beaker}>
@@ -1507,9 +1746,9 @@ function PrintablePrescription({ clinic, appointment, formData, patientName, own
   );
 
   const hasBloodData =
-
-
     blood.rows.some((row) => String(row.result || "").trim()) ||
+    (blood.biochemistry?.enabled &&
+      blood.biochemistry.rows?.some((row) => String(row.result || "").trim())) ||
     [
       blood.sampleId,
       blood.analyser,
@@ -1596,7 +1835,7 @@ function PrintablePrescription({ clinic, appointment, formData, patientName, own
                     <td>{row.unit}</td>
                     <td>{row.range}</td>
                     <td
-                      className={`print-flag print-flag-${row.flag.toLowerCase()}`}
+                      className={`print-flag print-flag-${String(row.flag || "").toLowerCase()}`}
                     >
                       {row.flag}
                     </td>
@@ -1627,6 +1866,57 @@ function PrintablePrescription({ clinic, appointment, formData, patientName, own
           )}
         </PrintSection>
       )}
+
+      {/* 🔥 NEW: Printed Serum Biochemistry */}
+      {blood.biochemistry?.enabled &&
+        blood.biochemistry.rows?.some((row) => String(row.result || "").trim()) && (
+          <PrintSection title="Serum Biochemistry">
+            <div className="print-report-meta">
+              <PrintInfo label="Report date" value={blood.biochemistry.reportDate} />
+              <PrintInfo label="Sample ID" value={blood.biochemistry.sampleId} />
+              <PrintInfo label="Specimen" value={blood.biochemistry.specimen} />
+              <PrintInfo label="Analyser" value={blood.biochemistry.analyser} />
+            </div>
+
+            {BIOCHEMISTRY_PANELS.map((panel) => {
+              const rows = blood.biochemistry.rows
+                .filter((row) => row.panel === panel.id && String(row.result || "").trim());
+
+              if (!rows.length) return null;
+
+              return (
+                <div key={panel.id} className="print-biochem-panel">
+                  <h4 className="print-biochem-panel-heading">{panel.label}</h4>
+                  <table className="print-table compact">
+                    <thead>
+                      <tr>
+                        <th>Parameter</th>
+                        <th>Result</th>
+                        <th>Unit</th>
+                        <th>Reference range</th>
+                        <th>Flag</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((row) => (
+                        <tr key={row.key}>
+                          <td>{row.test}</td>
+                          <td className="fw-bold">{row.result}</td>
+                          <td>{row.unit}</td>
+                          <td>{row.range}</td>
+                          <td className={`print-flag print-flag-${String(row.flag || "").toLowerCase()}`}>
+                            {row.flag || "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+          </PrintSection>
+        )}
+
       {formData.laboratoryTests.length > 0 && <PrintSection title="Additional Laboratory Requests"><SimpleList items={formData.laboratoryTests.map(x => `${x.testName} — ${x.specimen} — ${formatEnum(x.priority)} — ${x.instructions}`)} /></PrintSection>}
       {formData.imagingRequests.length > 0 && <PrintSection title="Imaging Requests"><SimpleList items={formData.imagingRequests.map(x => { const result = x.result || {}; return `${formatEnum(x.type)}: ${x.bodyPart || ""}, ${x.views || ""}; ${formatEnum(x.priority)}. ${x.clinicalHistory || ""}${result.findings || result.impression ? ` Result — Findings: ${result.findings || "—"}; Impression: ${result.impression || "—"}.` : ""}`; })} /></PrintSection>}
       {formData.vaccinations.length > 0 && <PrintSection title="Vaccination Record"><SimpleList items={formData.vaccinations.map(x => `${x.vaccineName}, ${x.dose}, ${formatEnum(x.route)}, Batch ${x.batchNo}, ${x.manufacturer}, administered ${x.administeredDate}, next due ${x.nextDueDate}. ${x.notes}`)} /></PrintSection>}
