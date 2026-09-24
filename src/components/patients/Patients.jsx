@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useState,
 } from "react";
 import {
@@ -1877,29 +1878,16 @@ function PatientFormModal({
 
           <FormSection title="Ownership and classification">
             <div className="row g-3">
-              <FormSelect
-                label="Pet owner"
-                name="ownerId"
-                value={formData.ownerId}
-                onChange={onChange}
-                error={fieldErrors.ownerId}
-                required
-                col="col-md-6"
-              >
-                <option value="">
-                  Select owner
-                </option>
-
-                {safeOwners.map((owner) => (
-                  <option
-                    key={owner.id}
-                    value={owner.id}
-                  >
-                    {getOwnerName(owner)} —{" "}
-                    {owner.phone || "No phone"}
-                  </option>
-                ))}
-              </FormSelect>
+              {/* SEARCHABLE OWNER PICKER */}
+              <div className="col-md-6">
+                <SearchableOwnerSelect
+                  owners={safeOwners}
+                  value={formData.ownerId}
+                  onChange={onChange}
+                  error={fieldErrors.ownerId}
+                  required
+                />
+              </div>
 
               <FormSelect
                 label="Species"
@@ -2517,6 +2505,237 @@ function PatientAvatar({
       }}
     >
       <PawPrint size={size * 0.45} />
+    </div>
+  );
+}
+
+function SearchableOwnerSelect({
+  owners = [],
+  value,
+  onChange,
+  error,
+  required,
+}) {
+  const [search, setSearch] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+
+  const selectedOwner = useMemo(() => {
+    return owners.find((owner) => owner.id === value) || null;
+  }, [owners, value]);
+
+  const filteredOwners = useMemo(() => {
+    const query = String(search || "").trim().toLowerCase();
+    if (!query) return owners;
+
+    return owners.filter((owner) => {
+      const fullName = getOwnerName(owner).toLowerCase();
+      const phone = String(owner?.phone || "")
+        .replace(/\s+/g, "")
+        .toLowerCase();
+      const cleanQuery = query.replace(/\s+/g, "");
+
+      return fullName.includes(query) || phone.includes(cleanQuery);
+    });
+  }, [owners, search]);
+
+  function handleSelect(owner) {
+    onChange({
+      target: {
+        name: "ownerId",
+        value: owner.id,
+      },
+    });
+    setSearch("");
+    setIsOpen(false);
+  }
+
+  function handleClear(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    onChange({
+      target: {
+        name: "ownerId",
+        value: "",
+      },
+    });
+    setSearch("");
+    setIsOpen(true);
+  }
+
+  return (
+    <div
+      className="position-relative"
+      style={{ zIndex: isOpen ? 1090 : "auto" }}
+    >
+      <label className="form-label">
+        Pet owner
+        {required && <span className="text-danger ms-1">*</span>}
+      </label>
+
+      <div className={`input-group ${error ? "has-validation" : ""}`}>
+        <span
+          className={`input-group-text bg-white ${
+            error ? "border-danger" : ""
+          }`}
+        >
+          <Search size={17} className="text-secondary" />
+        </span>
+
+        <input
+          type="search"
+          className={`form-control shadow-none ${
+            error ? "is-invalid" : ""
+          }`}
+          value={search}
+          autoComplete="off"
+          placeholder={
+            selectedOwner
+              ? `${getOwnerName(selectedOwner)} selected`
+              : "Search owner by name or phone..."
+          }
+          onFocus={() => setIsOpen(true)}
+          onClick={() => setIsOpen(true)}
+          onChange={(event) => {
+            setSearch(event.target.value);
+            setIsOpen(true);
+          }}
+        />
+
+        {selectedOwner && (
+          <button
+            type="button"
+            className="btn btn-light border"
+            onClick={handleClear}
+            title="Clear selected owner"
+          >
+            ×
+          </button>
+        )}
+
+        {error && (
+          <div className="invalid-feedback">
+            {Array.isArray(error) ? error[0] : error}
+          </div>
+        )}
+      </div>
+
+      {selectedOwner && (
+        <div className="mt-2">
+          <div className="border rounded-3 bg-primary-subtle p-2">
+            <div className="d-flex align-items-center gap-2">
+              <div
+                className="rounded-circle bg-white text-primary d-flex align-items-center justify-content-center flex-shrink-0"
+                style={{ width: 34, height: 34 }}
+              >
+                <UserRound size={16} />
+              </div>
+
+              <div className="flex-grow-1 overflow-hidden">
+                <div className="fw-semibold small text-truncate">
+                  {getOwnerName(selectedOwner)}
+                </div>
+
+                <div className="small text-secondary text-truncate">
+                  {selectedOwner.phone || "No phone"}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isOpen && (
+        <>
+          <div
+            className="position-fixed top-0 start-0 w-100 h-100"
+            style={{ zIndex: 1080 }}
+            onClick={() => setIsOpen(false)}
+          />
+
+          <div
+            className="position-absolute start-0 end-0 mt-1 bg-white border rounded-3 shadow-lg overflow-hidden"
+            style={{ zIndex: 1090 }}
+          >
+            <div className="px-3 py-2 bg-light border-bottom d-flex justify-content-between align-items-center">
+              <small className="fw-semibold">Owners</small>
+
+              <small className="text-secondary">
+                {filteredOwners.length} found
+              </small>
+            </div>
+
+            <div className="overflow-auto" style={{ maxHeight: "300px" }}>
+              {filteredOwners.length === 0 ? (
+                <div className="text-center py-4 px-3">
+                  <Search size={28} className="text-secondary mb-2" />
+
+                  <div className="fw-semibold small">No owner found</div>
+
+                  <div className="small text-secondary mt-1">
+                    Search using owner name or phone number.
+                  </div>
+                </div>
+              ) : (
+                filteredOwners.map((owner) => {
+                  const isSelected = owner.id === value;
+
+                  return (
+                    <button
+                      key={owner.id}
+                      type="button"
+                      className={`w-100 border-0 border-bottom text-start p-3 ${
+                        isSelected ? "bg-primary-subtle" : "bg-white"
+                      }`}
+                      style={{ cursor: "pointer" }}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => handleSelect(owner)}
+                    >
+                      <div className="d-flex align-items-center gap-3">
+                        <div
+                          className="rounded-circle bg-primary-subtle text-primary d-flex align-items-center justify-content-center flex-shrink-0"
+                          style={{ width: 42, height: 42 }}
+                        >
+                          <UserRound size={18} />
+                        </div>
+
+                        <div className="flex-grow-1 overflow-hidden">
+                          <div className="fw-semibold text-truncate">
+                            {getOwnerName(owner)}
+                          </div>
+                        </div>
+
+                        <div
+                          className="text-end flex-shrink-0"
+                          style={{ maxWidth: "45%" }}
+                        >
+                          <div className="small fw-semibold text-truncate">
+                            {owner.phone || "No phone"}
+                          </div>
+
+                          {owner.email && (
+                            <small className="text-secondary text-truncate d-block">
+                              {owner.email}
+                            </small>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            {filteredOwners.length > 0 && (
+              <div className="px-3 py-2 border-top bg-light">
+                <small className="text-secondary">
+                  Search by owner name or phone number.
+                </small>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -207,6 +207,12 @@ function Appointments() {
     useState({});
   const [selectedServices, setSelectedServices] = useState([]);
 
+  // Registered patient search fields
+  const [patientSearch, setPatientSearch] = useState("");
+  const [ownerSearch, setOwnerSearch] = useState("");
+  const [phoneSearch, setPhoneSearch] = useState("");
+  const [activeSearchField, setActiveSearchField] = useState("");
+
   const [loading, setLoading] = useState(true);
   const [optionsLoading, setOptionsLoading] =
     useState(true);
@@ -225,6 +231,125 @@ function Appointments() {
       ) || null,
     [patients, formData.petId],
   );
+
+  // Search the already-loaded registered patients by patient name,
+  // owner name, or owner phone. The result is always a registered patient.
+  const patientSearchResults = useMemo(() => {
+    const searchValue =
+      activeSearchField === "patient"
+        ? patientSearch
+        : activeSearchField === "owner"
+          ? ownerSearch
+          : phoneSearch;
+
+    const normalizeText = (value) =>
+      String(value ?? "")
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, " ");
+
+    const normalizePhone = (value) =>
+      String(value ?? "").replace(/\D/g, "");
+
+    const search = normalizeText(searchValue);
+    const phoneQuery = normalizePhone(searchValue);
+
+    // When the field is focused with no search text, show the registered
+    // patient list instead of an empty dropdown. Typing then filters it.
+    if (!search && !phoneQuery) return patients.slice(0, 50);
+
+    return patients
+      .filter((patient) => {
+        const patientName = normalizeText(patient?.name);
+        const ownerName = normalizeText(getOwnerName(patient?.owner));
+        const firstName = normalizeText(patient?.owner?.firstName);
+        const lastName = normalizeText(patient?.owner?.lastName);
+        const ownerPhone = normalizePhone(patient?.owner?.phone);
+        const mobile = normalizePhone(patient?.owner?.mobile);
+        const phoneNumber = normalizePhone(patient?.owner?.phoneNumber);
+
+        if (activeSearchField === "patient") {
+          return patientName.includes(search);
+        }
+
+        if (activeSearchField === "owner") {
+          return (
+            firstName.includes(search) ||
+            lastName.includes(search) ||
+            ownerName.includes(search)
+          );
+        }
+
+        if (activeSearchField === "phone") {
+          return (
+            (phoneQuery && ownerPhone.includes(phoneQuery)) ||
+            (phoneQuery && mobile.includes(phoneQuery)) ||
+            (phoneQuery && phoneNumber.includes(phoneQuery))
+          );
+        }
+
+        return false;
+      })
+      .slice(0, 20);
+  }, [
+    patients,
+    patientSearch,
+    ownerSearch,
+    phoneSearch,
+    activeSearchField,
+  ]);
+
+  function handleRegisteredPatientSearch(field, value) {
+    if (field === "patient") setPatientSearch(value);
+    if (field === "owner") setOwnerSearch(value);
+    if (field === "phone") setPhoneSearch(value);
+
+    setActiveSearchField(field);
+
+    // Typing after a patient was selected starts a new search, so do not
+    // accidentally keep the previous pet/owner IDs.
+    if (formData.petId) {
+      setFormData((previous) => ({
+        ...previous,
+        petId: "",
+        ownerId: "",
+      }));
+    }
+
+    setFieldErrors((previous) => ({
+      ...previous,
+      petId: "",
+      ownerId: "",
+    }));
+    setFormError("");
+  }
+
+  function handleRegisteredPatientSelect(patient) {
+    setFormData((previous) => ({
+      ...previous,
+      petId: patient.id,
+      ownerId: patient?.owner?.id || patient?.ownerId || "",
+    }));
+
+    setPatientSearch(patient?.name || "");
+    setOwnerSearch(getOwnerName(patient?.owner) || "");
+    setPhoneSearch(patient?.owner?.phone || "");
+    setActiveSearchField("");
+
+    setFieldErrors((previous) => ({
+      ...previous,
+      petId: "",
+      ownerId: "",
+    }));
+    setFormError("");
+  }
+
+  function resetRegisteredPatientSearch() {
+    setPatientSearch("");
+    setOwnerSearch("");
+    setPhoneSearch("");
+    setActiveSearchField("");
+  }
 
   // Handle service change - MOVED INSIDE COMPONENT
   const handleServiceChange = (services) => {
@@ -341,17 +466,65 @@ function Appointments() {
     try {
       setOptionsLoading(true);
 
+      // Load every registered patient page-by-page. The previous
+      // implementation only loaded the first 100 ACTIVE patients, so
+      // owner/phone searches could not find patients outside that page.
+      const loadAllPatients = async () => {
+        const allPatients = [];
+        const seenIds = new Set();
+        const pageSize = 100;
+        const maxPages = 1000;
+        let page = 1;
+        let totalPages = null;
+
+        while (page <= maxPages) {
+          const result = await patientService.getPatients({
+            page,
+            limit: pageSize,
+          });
+
+          const pagePatients = extractArray(result, [
+            "patients",
+            "pets",
+          ]);
+
+          pagePatients.forEach((patient, index) => {
+            const key = patient?.id || `page-${page}-${index}`;
+            if (!seenIds.has(key)) {
+              seenIds.add(key);
+              allPatients.push(patient);
+            }
+          });
+
+          const paginationData =
+            result?.pagination || result?.data?.pagination || {};
+          const reportedTotalPages = Number(
+            paginationData.totalPages ??
+            paginationData.pages ??
+            result?.totalPages ??
+            result?.data?.totalPages,
+          );
+
+          if (Number.isFinite(reportedTotalPages) && reportedTotalPages > 0) {
+            totalPages = reportedTotalPages;
+          }
+
+          if (totalPages !== null && page >= totalPages) break;
+          if (pagePatients.length < pageSize) break;
+
+          page += 1;
+        }
+
+        return allPatients;
+      };
+
       const [
-        patientsResult,
+        allPatients,
         veterinariansResult,
         servicesResult,
         vaccinesResult,
       ] = await Promise.all([
-        patientService.getPatients({
-          page: 1,
-          limit: 100,
-          status: "ACTIVE",
-        }),
+        loadAllPatients(),
 
         apiRequest(
           "/users?role=VETERINARIAN&isActive=true&limit=100",
@@ -373,12 +546,7 @@ function Appointments() {
         }),
       ]);
 
-      setPatients(
-        extractArray(patientsResult, [
-          "patients",
-          "pets",
-        ]),
-      );
+      setPatients(allPatients);
 
       setVeterinarians(
         extractArray(veterinariansResult, [
@@ -614,6 +782,7 @@ function Appointments() {
 
     setEditingAppointment(null);
     setSelectedServices([]);
+    resetRegisteredPatientSearch();
     setFormData({
       ...initialFormData,
       scheduledDate: date,
@@ -665,6 +834,21 @@ function Appointments() {
       vaccineSite: appointment.vaccination?.site || "",
       vaccineNotes: appointment.vaccination?.notes || "",
     });
+
+    const appointmentPatient =
+      appointment.pet ||
+      patients.find((patient) => patient.id === appointment.petId) ||
+      null;
+
+    setPatientSearch(appointmentPatient?.name || "");
+    setOwnerSearch(
+      getOwnerName(appointment.owner || appointmentPatient?.owner) || "",
+    );
+    setPhoneSearch(
+      appointment.owner?.phone || appointmentPatient?.owner?.phone || "",
+    );
+    setActiveSearchField("");
+
     setFieldErrors({});
     setFormError("");
     setShowDetails(false);
@@ -678,6 +862,7 @@ function Appointments() {
     setEditingAppointment(null);
     setFormData(initialFormData);
     setSelectedServices([]);
+    resetRegisteredPatientSearch();
     setFieldErrors({});
     setFormError("");
   }
@@ -1576,6 +1761,14 @@ function Appointments() {
           vaccines={vaccines}
           selectedPatient={selectedPatient}
           selectedServices={selectedServices}
+          patientSearch={patientSearch}
+          ownerSearch={ownerSearch}
+          phoneSearch={phoneSearch}
+          activeSearchField={activeSearchField}
+          patientSearchResults={patientSearchResults}
+          onRegisteredPatientSearch={handleRegisteredPatientSearch}
+          onRegisteredPatientSelect={handleRegisteredPatientSelect}
+          onSearchFieldFocus={setActiveSearchField}
           fieldErrors={fieldErrors}
           formError={formError}
           submitting={submitting}
@@ -1640,6 +1833,14 @@ function AppointmentFormModal({
   vaccines,
   selectedPatient,
   selectedServices,
+  patientSearch,
+  ownerSearch,
+  phoneSearch,
+  activeSearchField,
+  patientSearchResults,
+  onRegisteredPatientSearch,
+  onRegisteredPatientSelect,
+  onSearchFieldFocus,
   fieldErrors,
   formError,
   submitting,
@@ -1672,10 +1873,6 @@ function AppointmentFormModal({
             </div>
           )}
 
-          {/* ============================= */}
-          {/* APPOINTMENT MODE */}
-          {/* ============================= */}
-
           <FormSection title="Appointment mode">
             <div className="row g-3">
               <FormSelect
@@ -1689,7 +1886,6 @@ function AppointmentFormModal({
                 <option value="SCHEDULED">
                   Registered customer
                 </option>
-
                 <option value="WALK_IN">
                   Walk-in customer
                 </option>
@@ -1699,15 +1895,11 @@ function AppointmentFormModal({
                 <div className="alert alert-light border mb-0 w-100 py-2">
                   {isWalkIn
                     ? "Walk-in appointments are checked in immediately using the current date and time."
-                    : "Search and select an existing registered patient by patient name, owner name or phone number."}
+                    : "Select an existing registered patient and appointment schedule."}
                 </div>
               </div>
             </div>
           </FormSection>
-
-          {/* ============================= */}
-          {/* WALK-IN / REGISTERED PATIENT */}
-          {/* ============================= */}
 
           {isWalkIn ? (
             <FormSection title="Walk-in customer and pet">
@@ -1775,21 +1967,10 @@ function AppointmentFormModal({
                   onChange={onChange}
                   col="col-md-4"
                 >
-                  <option value="">
-                    Unknown
-                  </option>
-
-                  <option value="MALE">
-                    Male
-                  </option>
-
-                  <option value="FEMALE">
-                    Female
-                  </option>
-
-                  <option value="OTHER">
-                    Other
-                  </option>
+                  <option value="">Unknown</option>
+                  <option value="MALE">Male</option>
+                  <option value="FEMALE">Female</option>
+                  <option value="OTHER">Other</option>
                 </FormSelect>
 
                 <FormInput
@@ -1817,104 +1998,53 @@ function AppointmentFormModal({
           ) : (
             <FormSection title="Patient and owner">
               <div className="row g-3">
-                {/* NEW SEARCHABLE PATIENT PICKER */}
-
-                <div className="col-md-6">
-                  <SearchablePatientSelect
-                    patients={patients}
-                    value={formData.petId}
-                    onChange={onChange}
-                    error={fieldErrors.petId}
-                  />
-                </div>
-
-                {/* OWNER AUTO FILLED */}
-
-                <FormInput
-                  label="Owner"
-                  value={getOwnerName(
-                    selectedPatient?.owner,
-                  )}
-                  error={fieldErrors.ownerId}
-                  readOnly
-                  col="col-md-3"
+                <SearchableRegisteredField
+                  label="Patient"
+                  value={patientSearch}
+                  placeholder="Search patient name"
+                  required
+                  error={fieldErrors.petId}
+                  col="col-md-6"
+                  active={activeSearchField === "patient"}
+                  results={patientSearchResults}
+                  onFocus={() => onSearchFieldFocus("patient")}
+                  onChange={(value) =>
+                    onRegisteredPatientSearch("patient", value)
+                  }
+                  onSelect={onRegisteredPatientSelect}
                 />
 
-                {/* PHONE AUTO FILLED */}
-
-                <FormInput
-                  label="Phone"
-                  value={
-                    selectedPatient?.owner?.phone || ""
-                  }
-                  readOnly
+                <SearchableRegisteredField
+                  label="Owner"
+                  value={ownerSearch}
+                  placeholder="Search owner name"
+                  error={fieldErrors.ownerId}
                   col="col-md-3"
+                  active={activeSearchField === "owner"}
+                  results={patientSearchResults}
+                  onFocus={() => onSearchFieldFocus("owner")}
+                  onChange={(value) =>
+                    onRegisteredPatientSearch("owner", value)
+                  }
+                  onSelect={onRegisteredPatientSelect}
+                />
+
+                <SearchableRegisteredField
+                  label="Phone"
+                  value={phoneSearch}
+                  placeholder="Search owner phone"
+                  col="col-md-3"
+                  active={activeSearchField === "phone"}
+                  results={patientSearchResults}
+                  onFocus={() => onSearchFieldFocus("phone")}
+                  onChange={(value) =>
+                    onRegisteredPatientSearch("phone", value)
+                  }
+                  onSelect={onRegisteredPatientSelect}
                 />
               </div>
-
-              {/* SELECTED PATIENT SUMMARY */}
-
-              {selectedPatient && (
-                <div className="mt-3">
-                  <div className="border rounded-4 bg-light p-3">
-                    <div className="d-flex flex-wrap align-items-center gap-3">
-                      <div
-                        className="rounded-circle bg-primary-subtle text-primary d-flex align-items-center justify-content-center"
-                        style={{
-                          width: 46,
-                          height: 46,
-                        }}
-                      >
-                        <PawPrint size={20} />
-                      </div>
-
-                      <div className="flex-grow-1">
-                        <div className="fw-bold">
-                          {selectedPatient.name}
-                        </div>
-
-                        <small className="text-secondary">
-                          {selectedPatient.species?.name ||
-                            "Unknown species"}
-
-                          {selectedPatient.breed?.name
-                            ? ` • ${selectedPatient.breed.name}`
-                            : ""}
-                        </small>
-                      </div>
-
-                      <div>
-                        <small className="text-secondary d-block">
-                          Owner
-                        </small>
-
-                        <span className="fw-semibold">
-                          {getOwnerName(
-                            selectedPatient.owner,
-                          ) || "—"}
-                        </span>
-                      </div>
-
-                      <div>
-                        <small className="text-secondary d-block">
-                          Phone
-                        </small>
-
-                        <span className="fw-semibold">
-                          {selectedPatient.owner?.phone ||
-                            "—"}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
             </FormSection>
           )}
-
-          {/* ============================= */}
-          {/* APPOINTMENT SCHEDULE */}
-          {/* ============================= */}
 
           <FormSection title="Appointment schedule">
             <div className="row g-3">
@@ -1928,10 +2058,7 @@ function AppointmentFormModal({
                 col="col-md-4"
               >
                 {APPOINTMENT_TYPES.map((type) => (
-                  <option
-                    key={type.value}
-                    value={type.value}
-                  >
+                  <option key={type.value} value={type.value}>
                     {type.label}
                   </option>
                 ))}
@@ -1949,7 +2076,6 @@ function AppointmentFormModal({
                     required
                     col="col-md-3"
                   />
-
                   <FormInput
                     label="Time"
                     name="scheduledTime"
@@ -1974,14 +2100,8 @@ function AppointmentFormModal({
                 onChange={onChange}
                 error={fieldErrors.durationMin}
                 required
-                disabled={
-                  formData.type === "VACCINATION"
-                }
-                col={
-                  isWalkIn
-                    ? "col-md-4"
-                    : "col-md-3"
-                }
+                disabled={formData.type === "VACCINATION"}
+                col={isWalkIn ? "col-md-4" : "col-md-3"}
               />
 
               <FormSelect
@@ -1991,62 +2111,38 @@ function AppointmentFormModal({
                 onChange={onChange}
                 col="col-md-6"
               >
-                <option value="">
-                  Unassigned
-                </option>
-
+                <option value="">Unassigned</option>
                 {veterinarians.map((user) => (
-                  <option
-                    key={user.id}
-                    value={user.id}
-                  >
+                  <option key={user.id} value={user.id}>
                     {getUserName(user)}
-
-                    {user.specialization
-                      ? ` — ${user.specialization}`
-                      : ""}
+                    {user.specialization ? ` — ${user.specialization}` : ""}
                   </option>
                 ))}
               </FormSelect>
 
-              {/* SERVICES */}
-
+              {/* SERVICES MULTI-SELECT */}
               <div className="col-12">
                 <label className="form-label">
                   Services * (Select up to 2)
                 </label>
-
                 <ServiceMultiSelect
                   selectedServices={selectedServices}
-                  onServicesChange={
-                    onServiceChange
-                  }
+                  onServicesChange={onServiceChange}
                   services={services}
-                  disabled={
-                    formData.type ===
-                    "VACCINATION"
-                  }
-                  error={
-                    fieldErrors.serviceIds
-                  }
+                  disabled={formData.type === "VACCINATION"}
+                  error={fieldErrors.serviceIds}
                 />
-
-                {formData.type ===
-                  "VACCINATION" && (
+                {formData.type === "VACCINATION" && (
                   <div className="alert alert-info mt-2">
                     <small>
-                      💉 Vaccination service will
-                      be automatically added.
+                      💉 Vaccination service will be automatically added.
                     </small>
                   </div>
                 )}
               </div>
+              {/* END OF SERVICES MULTI-SELECT */}
             </div>
           </FormSection>
-
-          {/* ============================= */}
-          {/* VACCINATION */}
-          {/* ============================= */}
 
           {formData.type === "VACCINATION" && (
             <FormSection title="Vaccination details">
@@ -2061,20 +2157,11 @@ function AppointmentFormModal({
                   disabled={editing}
                   col="col-md-6"
                 >
-                  <option value="">
-                    Select vaccine
-                  </option>
-
+                  <option value="">Select vaccine</option>
                   {vaccines.map((vaccine) => (
-                    <option
-                      key={vaccine.id}
-                      value={vaccine.id}
-                    >
+                    <option key={vaccine.id} value={vaccine.id}>
                       {vaccine.name}
-
-                      {vaccine.code
-                        ? ` — ${vaccine.code}`
-                        : ""}
+                      {vaccine.code ? ` — ${vaccine.code}` : ""}
                     </option>
                   ))}
                 </FormSelect>
@@ -2090,9 +2177,7 @@ function AppointmentFormModal({
                 <FormInput
                   label="Price per dose"
                   name="vaccinePricePerDose"
-                  value={
-                    formData.vaccinePricePerDose
-                  }
+                  value={formData.vaccinePricePerDose}
                   readOnly
                   col="col-md-4"
                 />
@@ -2115,25 +2200,11 @@ function AppointmentFormModal({
                   disabled={editing}
                   col="col-md-4"
                 >
-                  <option value="Subcutaneous">
-                    Subcutaneous
-                  </option>
-
-                  <option value="Intramuscular">
-                    Intramuscular
-                  </option>
-
-                  <option value="Intravenous">
-                    Intravenous
-                  </option>
-
-                  <option value="Oral">
-                    Oral
-                  </option>
-
-                  <option value="Other">
-                    Other
-                  </option>
+                  <option value="Subcutaneous">Subcutaneous</option>
+                  <option value="Intramuscular">Intramuscular</option>
+                  <option value="Intravenous">Intravenous</option>
+                  <option value="Oral">Oral</option>
+                  <option value="Other">Other</option>
                 </FormSelect>
 
                 <FormInput
@@ -2156,7 +2227,6 @@ function AppointmentFormModal({
                   rows="2"
                 />
               </div>
-
               <div className="alert alert-info mt-3 mb-0 small">
                 {editing
                   ? "Vaccination details are shown from the linked vaccination record. Manage administration and stock from the Vaccination module."
@@ -2164,10 +2234,6 @@ function AppointmentFormModal({
               </div>
             </FormSection>
           )}
-
-          {/* ============================= */}
-          {/* CLINICAL DETAILS */}
-          {/* ============================= */}
 
           <FormSection title="Clinical details">
             <div className="row g-3">
@@ -2200,10 +2266,6 @@ function AppointmentFormModal({
             </div>
           </FormSection>
         </div>
-
-        {/* ============================= */}
-        {/* FOOTER */}
-        {/* ============================= */}
 
         <div className="modal-footer bg-white flex-shrink-0">
           <button
@@ -2238,451 +2300,6 @@ function AppointmentFormModal({
     </ModalShell>
   );
 }
-
-function SearchablePatientSelect({
-  patients = [],
-  value,
-  onChange,
-  error,
-}) {
-  const [search, setSearch] = useState("");
-  const [isOpen, setIsOpen] = useState(false);
-
-  const selectedPatient = useMemo(() => {
-    return (
-      patients.find(
-        (patient) => patient.id === value,
-      ) || null
-    );
-  }, [patients, value]);
-
-  /*
-  |--------------------------------------------------------------------------
-  | Search patients
-  |--------------------------------------------------------------------------
-  |
-  | Searchable using:
-  |
-  | - Patient name
-  | - Owner first name
-  | - Owner last name
-  | - Full owner name
-  | - Phone number
-  | - Species
-  |
-  | If search is empty, all patients are displayed.
-  |
-  */
-
-  const filteredPatients = useMemo(() => {
-    const query = String(search || "")
-      .trim()
-      .toLowerCase();
-
-    if (!query) {
-      return patients;
-    }
-
-    return patients.filter((patient) => {
-      const patientName = String(
-        patient?.name || "",
-      ).toLowerCase();
-
-      const firstName = String(
-        patient?.owner?.firstName || "",
-      ).toLowerCase();
-
-      const lastName = String(
-        patient?.owner?.lastName || "",
-      ).toLowerCase();
-
-      const ownerName = getOwnerName(
-        patient?.owner,
-      ).toLowerCase();
-
-      const phone = String(
-        patient?.owner?.phone || "",
-      )
-        .replace(/\s+/g, "")
-        .toLowerCase();
-
-      const species = String(
-        patient?.species?.name || "",
-      ).toLowerCase();
-
-      const cleanQuery = query.replace(
-        /\s+/g,
-        "",
-      );
-
-      return (
-        patientName.includes(query) ||
-        firstName.includes(query) ||
-        lastName.includes(query) ||
-        ownerName.includes(query) ||
-        phone.includes(cleanQuery) ||
-        species.includes(query)
-      );
-    });
-  }, [patients, search]);
-
-  /*
-  |--------------------------------------------------------------------------
-  | Select patient
-  |--------------------------------------------------------------------------
-  */
-
-  function handlePatientSelect(patient) {
-    onChange({
-      target: {
-        name: "petId",
-        value: patient.id,
-      },
-    });
-
-    setSearch("");
-    setIsOpen(false);
-  }
-
-  /*
-  |--------------------------------------------------------------------------
-  | Clear selected patient
-  |--------------------------------------------------------------------------
-  */
-
-  function clearSelectedPatient(event) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    onChange({
-      target: {
-        name: "petId",
-        value: "",
-      },
-    });
-
-    setSearch("");
-    setIsOpen(true);
-  }
-
-  /*
-  |--------------------------------------------------------------------------
-  | Search input
-  |--------------------------------------------------------------------------
-  */
-
-  function handleSearchChange(event) {
-    setSearch(event.target.value);
-    setIsOpen(true);
-  }
-
-  return (
-    <div
-      className="position-relative"
-      style={{
-        zIndex: isOpen ? 1090 : "auto",
-      }}
-    >
-      <label className="form-label">
-        Patient
-
-        <span className="text-danger ms-1">
-          *
-        </span>
-      </label>
-
-      {/* SEARCH FIELD */}
-
-      <div
-        className={`input-group ${
-          error ? "has-validation" : ""
-        }`}
-      >
-        <span
-          className={`input-group-text bg-white ${
-            error
-              ? "border-danger"
-              : ""
-          }`}
-        >
-          <Search
-            size={17}
-            className="text-secondary"
-          />
-        </span>
-
-        <input
-          type="search"
-          className={`form-control shadow-none ${
-            error ? "is-invalid" : ""
-          }`}
-          value={search}
-          autoComplete="off"
-          placeholder={
-            selectedPatient
-              ? `${selectedPatient.name} selected`
-              : "Search patient, owner or phone..."
-          }
-          onFocus={() => {
-            setIsOpen(true);
-          }}
-          onClick={() => {
-            setIsOpen(true);
-          }}
-          onChange={handleSearchChange}
-        />
-
-        {selectedPatient && (
-          <button
-            type="button"
-            className="btn btn-light border"
-            onClick={clearSelectedPatient}
-            title="Clear selected patient"
-          >
-            ×
-          </button>
-        )}
-
-        {error && (
-          <div className="invalid-feedback">
-            {Array.isArray(error)
-              ? error[0]
-              : error}
-          </div>
-        )}
-      </div>
-
-      {/* SELECTED PATIENT */}
-
-      {selectedPatient && (
-        <div className="mt-2">
-          <div
-            className="border rounded-3 bg-primary-subtle p-2"
-          >
-            <div className="d-flex align-items-center gap-2">
-              <div
-                className="rounded-circle bg-white text-primary d-flex align-items-center justify-content-center flex-shrink-0"
-                style={{
-                  width: 34,
-                  height: 34,
-                }}
-              >
-                <PawPrint size={16} />
-              </div>
-
-              <div className="flex-grow-1 overflow-hidden">
-                <div className="fw-semibold small text-truncate">
-                  {selectedPatient.name}
-                </div>
-
-                <div className="small text-secondary text-truncate">
-                  {getOwnerName(
-                    selectedPatient.owner,
-                  ) || "No owner"}
-
-                  {selectedPatient.owner?.phone
-                    ? ` • ${selectedPatient.owner.phone}`
-                    : ""}
-                </div>
-              </div>
-
-              <CheckCircle2
-                size={18}
-                className="text-success flex-shrink-0"
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* DROPDOWN */}
-
-      {isOpen && (
-        <>
-          {/* invisible page click area */}
-
-          <div
-            className="position-fixed top-0 start-0 w-100 h-100"
-            style={{
-              zIndex: 1080,
-            }}
-            onClick={() =>
-              setIsOpen(false)
-            }
-          />
-
-          <div
-            className="position-absolute start-0 end-0 mt-1 bg-white border rounded-3 shadow-lg overflow-hidden"
-            style={{
-              zIndex: 1090,
-            }}
-          >
-            {/* RESULT HEADER */}
-
-            <div className="px-3 py-2 bg-light border-bottom d-flex justify-content-between align-items-center">
-              <small className="fw-semibold">
-                Patients
-              </small>
-
-              <small className="text-secondary">
-                {filteredPatients.length} found
-              </small>
-            </div>
-
-            {/* PATIENT RESULTS */}
-
-            <div
-              className="overflow-auto"
-              style={{
-                maxHeight: "300px",
-              }}
-            >
-              {filteredPatients.length ===
-              0 ? (
-                <div className="text-center py-4 px-3">
-                  <Search
-                    size={28}
-                    className="text-secondary mb-2"
-                  />
-
-                  <div className="fw-semibold small">
-                    No patient found
-                  </div>
-
-                  <div className="small text-secondary mt-1">
-                    Search using patient name,
-                    owner name or phone number.
-                  </div>
-                </div>
-              ) : (
-                filteredPatients.map(
-                  (patient) => {
-                    const isSelected =
-                      patient.id === value;
-
-                    const ownerName =
-                      getOwnerName(
-                        patient.owner,
-                      );
-
-                    return (
-                      <button
-                        key={patient.id}
-                        type="button"
-                        className={`w-100 border-0 border-bottom text-start p-3 ${
-                          isSelected
-                            ? "bg-primary-subtle"
-                            : "bg-white"
-                        }`}
-                        style={{
-                          cursor: "pointer",
-                        }}
-                        onMouseDown={(
-                          event,
-                        ) => {
-                          /*
-                           * Prevent input from
-                           * losing focus before
-                           * selection.
-                           */
-                          event.preventDefault();
-                        }}
-                        onClick={() =>
-                          handlePatientSelect(
-                            patient,
-                          )
-                        }
-                      >
-                        <div className="d-flex align-items-center gap-3">
-                          {/* PET ICON */}
-
-                          <div
-                            className="rounded-circle bg-primary-subtle text-primary d-flex align-items-center justify-content-center flex-shrink-0"
-                            style={{
-                              width: 42,
-                              height: 42,
-                            }}
-                          >
-                            <PawPrint
-                              size={18}
-                            />
-                          </div>
-
-                          {/* PATIENT */}
-
-                          <div className="flex-grow-1 overflow-hidden">
-                            <div className="d-flex align-items-center gap-2">
-                              <span className="fw-semibold text-truncate">
-                                {patient.name ||
-                                  "Unnamed patient"}
-                              </span>
-
-                              {isSelected && (
-                                <CheckCircle2
-                                  size={16}
-                                  className="text-success flex-shrink-0"
-                                />
-                              )}
-                            </div>
-
-                            <small className="text-secondary d-block">
-                              {patient.species
-                                ?.name ||
-                                "Unknown species"}
-
-                              {patient.breed
-                                ?.name
-                                ? ` • ${patient.breed.name}`
-                                : ""}
-                            </small>
-                          </div>
-
-                          {/* OWNER */}
-
-                          <div
-                            className="text-end flex-shrink-0"
-                            style={{
-                              maxWidth:
-                                "45%",
-                            }}
-                          >
-                            <div className="small fw-semibold text-truncate">
-                              {ownerName ||
-                                "No owner"}
-                            </div>
-
-                            <small className="text-secondary">
-                              {patient.owner
-                                ?.phone ||
-                                "No phone"}
-                            </small>
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  },
-                )
-              )}
-            </div>
-
-            {/* FOOTER */}
-
-            {filteredPatients.length >
-              0 && (
-              <div className="px-3 py-2 border-top bg-light">
-                <small className="text-secondary">
-                  Search by patient name,
-                  owner name or phone number.
-                </small>
-              </div>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 
 function AppointmentDetailsModal({
   appointment,
@@ -3014,6 +2631,84 @@ function FormSection({ title, children }) {
       </h6>
       {children}
     </section>
+  );
+}
+
+function SearchableRegisteredField({
+  label,
+  value,
+  placeholder,
+  error,
+  required,
+  col = "col-12",
+  active,
+  results = [],
+  onFocus,
+  onChange,
+  onSelect,
+}) {
+  return (
+    <div className={`${col} position-relative`}>
+      <label className="form-label">
+        {label}
+        {required && (
+          <span className="text-danger ms-1">*</span>
+        )}
+      </label>
+
+      <input
+        type={label === "Phone" ? "tel" : "text"}
+        className={`form-control ${error ? "is-invalid" : ""}`}
+        value={value}
+        placeholder={placeholder}
+        autoComplete="off"
+        onFocus={onFocus}
+        onChange={(event) => onChange(event.target.value)}
+      />
+
+      {active && results.length > 0 && (
+        <div
+          className="position-absolute w-100 bg-white border rounded-3 shadow-sm mt-1"
+          style={{ zIndex: 1080, maxHeight: 240, overflowY: "auto" }}
+        >
+          {results.map((patient) => (
+            <button
+              key={patient.id}
+              type="button"
+              className="w-100 text-start border-0 bg-white px-3 py-2"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => onSelect(patient)}
+            >
+              <div className="fw-semibold">
+                {patient.name || "Unnamed patient"}
+              </div>
+              <small className="text-secondary">
+                {patient.species?.name || "Unknown species"}
+                {" • "}
+                {getOwnerName(patient.owner) || "No owner"}
+                {" • "}
+                {patient.owner?.phone || "No phone"}
+              </small>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {active && value.trim() && results.length === 0 && !error && (
+        <div
+          className="position-absolute w-100 bg-white border rounded-3 shadow-sm mt-1 p-3 text-secondary small"
+          style={{ zIndex: 1080 }}
+        >
+          No registered patients found.
+        </div>
+      )}
+
+      {error && (
+        <div className="invalid-feedback d-block">
+          {Array.isArray(error) ? error[0] : error}
+        </div>
+      )}
+    </div>
   );
 }
 
