@@ -353,7 +353,7 @@ function Appointments() {
 
   // Handle service change - MOVED INSIDE COMPONENT
   const handleServiceChange = (services) => {
-    const nextServices = services.slice(0, 2);
+    const nextServices = services;
     setSelectedServices(nextServices);
 
     const totalDuration = nextServices.reduce(
@@ -488,13 +488,13 @@ function Appointments() {
             "pets",
           ]);
 
-          pagePatients.forEach((patient, index) => {
-            const key = patient?.id || `page-${page}-${index}`;
-            if (!seenIds.has(key)) {
-              seenIds.add(key);
-              allPatients.push(patient);
-            }
-          });
+         const currentPage = page;
+  pagePatients.forEach((patient, index) => {
+      const key = patient?.id || `page-${currentPage}-${index}`;
+      if (seenIds.has(key)) return;   // skip duplicate
+      seenIds.add(key);               // mark as seen
+      allPatients.push(patient);      // add to result
+    });
 
           const paginationData =
             result?.pagination || result?.data?.pagination || {};
@@ -2123,7 +2123,7 @@ function AppointmentFormModal({
               {/* SERVICES MULTI-SELECT */}
               <div className="col-12">
                 <label className="form-label">
-                  Services * (Select up to 2)
+                  Services 
                 </label>
                 <ServiceMultiSelect
                   selectedServices={selectedServices}

@@ -1,8 +1,6 @@
 import React, { useState } from "react";
 import { Check, Search, X } from "lucide-react";
 
-const MAX_SERVICES = 2;
-
 const ServiceMultiSelect = ({
   selectedServices = [],
   onServicesChange,
@@ -16,10 +14,6 @@ const ServiceMultiSelect = ({
     if (disabled) return;
 
     if (selectedServices.some((item) => item.id === service.id)) {
-      return;
-    }
-
-    if (selectedServices.length >= MAX_SERVICES) {
       return;
     }
 
@@ -54,16 +48,16 @@ const ServiceMultiSelect = ({
     0,
   );
 
-  const limitReached = selectedServices.length >= MAX_SERVICES;
+  const limitReached = false;
 
   return (
     <div className="space-y-3">
       <div className="d-flex justify-content-between align-items-center mb-2">
         <small className="text-secondary">
-          Select up to {MAX_SERVICES} services.
+          Select one or more services.
         </small>
         <small className={limitReached ? "text-danger fw-semibold" : "text-secondary"}>
-          {selectedServices.length}/{MAX_SERVICES}
+          {selectedServices.length} selected
         </small>
       </div>
 
@@ -114,13 +108,11 @@ const ServiceMultiSelect = ({
         />
         <input
           type="text"
-          placeholder={
-            limitReached ? "Maximum of 2 services selected" : "Search and add services..."
-          }
+          placeholder="Search and add services..."
           value={searchTerm}
           onChange={(event) => setSearchTerm(event.target.value)}
           className={`form-control ps-5 ${error ? "is-invalid" : ""}`}
-          disabled={disabled || limitReached}
+          disabled={disabled}
         />
       </div>
 
@@ -164,12 +156,6 @@ const ServiceMultiSelect = ({
       {searchTerm && !limitReached && filteredServices.length === 0 && (
         <div className="small text-secondary border rounded p-2">
           No services found.
-        </div>
-      )}
-
-      {limitReached && (
-        <div className="small text-warning-emphasis">
-          You can select a maximum of 2 services. Remove one to select another.
         </div>
       )}
 
