@@ -22,7 +22,7 @@ import {
   Trash2,
   UserRound,
   Weight,
-  X,
+  
 } from "lucide-react";
 
 import patientService from "../../services/patient.service";
@@ -219,6 +219,7 @@ function Patients() {
       filters.gender,
       filters.status,
       pagination.limit,
+      pagination.page
     ],
   );
 
@@ -257,7 +258,7 @@ function Patients() {
         await Promise.all([
           patientService.getOwners({
             page: 1,
-            limit: 100,
+            limit: 1000,
             isActive: true,
             sortBy: "firstName",
             sortOrder: "asc",
@@ -289,10 +290,7 @@ function Patients() {
   useEffect(() => {
     loadPatients(1);
   }, [
-    appliedSearch,
-    filters.speciesId,
-    filters.gender,
-    filters.status,
+    loadPatients
   ]);
 
   async function loadBreeds(speciesId) {

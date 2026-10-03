@@ -22,7 +22,7 @@ import {
   Search,
   UserRound,
   Users,
-  WalletCards,
+  
 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 
@@ -1001,12 +1001,12 @@ function OwnerDetailsModal({ owner, onClose, onEdit }) {
         if (tab === "pets") {
           result = await getOwnerPets(owner.id, {
             page: 1,
-            limit: 100,
+            limit: 1000,
           });
         } else if (tab === "appointments") {
           result = await getOwnerAppointments(owner.id, {
             page: 1,
-            limit: 100,
+            limit: 1000,
           });
         } else {
           result = await getOwnerFinancialStatement(
