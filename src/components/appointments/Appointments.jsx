@@ -488,15 +488,7 @@ function Appointments() {
             "pets",
           ]);
 
-<<<<<<< HEAD
-          pagePatients.forEach((patient, index) => {
-            const key = patient?.id || `page-${page}-${index}`;
-            if (!seenIds.has(key)) {
-              seenIds.add(key);
-              allPatients.push(patient);
-            }
-          });
-=======
+
          const currentPage = page;
   pagePatients.forEach((patient, index) => {
       const key = patient?.id || `page-${currentPage}-${index}`;
@@ -504,7 +496,8 @@ function Appointments() {
       seenIds.add(key);               // mark as seen
       allPatients.push(patient);      // add to result
     });
->>>>>>> feature/owners-phone-searchable
+
+    
 
           const paginationData =
             result?.pagination || result?.data?.pagination || {};
