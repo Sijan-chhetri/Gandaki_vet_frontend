@@ -68,21 +68,29 @@ export default function Login() {
     return "";
   }
 
-  async function handleSubmit(event) {
-    event.preventDefault();
 
-    const validationError = validateForm();
 
-    if (validationError) {
-      setFormError(validationError);
-      return;
-    }
+async function handleSubmit(event) {
+  event.preventDefault();
 
-    setIsSubmitting(true);
-    setFormError("");
+  const validationError = validateForm();
 
-    try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
+  if (validationError) {
+    setFormError(validationError);
+    return;
+  }
+
+  setIsSubmitting(true);
+  setFormError("");
+
+  try {
+    // ==========================================
+    // 1. LOGIN API
+    // ==========================================
+
+    const response = await fetch(
+      `${API_BASE_URL}/auth/login`,
+      {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -92,54 +100,252 @@ export default function Login() {
           email: formData.email.trim().toLowerCase(),
           password: formData.password,
         }),
-      });
+      }
+    );
 
-      const data = await response.json().catch(() => null);
+    const data = await response
+      .json()
+      .catch(() => null);
 
-      if (!response.ok) {
-        throw new Error(
-          data?.message ||
+    if (!response.ok) {
+      throw new Error(
+        data?.message ||
           "Unable to log in. Please check your credentials."
-        );
-      }
-
-      const responseData = data?.data ?? data;
-
-      const accessToken =
-        responseData?.accessToken ??
-        responseData?.token ??
-        data?.accessToken;
-
-      const user = responseData?.user ?? data?.user;
-
-      if (!accessToken || !user) {
-        throw new Error(
-          "The login response is missing the user or access token."
-        );
-      }
-
-      localStorage.setItem("accessToken", accessToken);
-      localStorage.setItem("token", accessToken);
-      localStorage.setItem("user", JSON.stringify(user));
-
-      if (formData.rememberMe) {
-        localStorage.setItem(
-          "vetnearyRememberedEmail",
-          formData.email.trim()
-        );
-      } else {
-        localStorage.removeItem("vetnearyRememberedEmail");
-      }
-
-      navigate("/dashboard");
-    } catch (error) {
-      setFormError(
-        error.message || "Unable to log in. Please try again."
       );
-    } finally {
-      setIsSubmitting(false);
     }
+
+    // ==========================================
+    // 2. GET USER AND ACCESS TOKEN
+    // ==========================================
+
+    const responseData = data?.data ?? data;
+
+    const accessToken =
+      responseData?.accessToken ??
+      responseData?.token ??
+      data?.accessToken;
+
+    const user =
+      responseData?.user ?? data?.user;
+
+    if (!accessToken || !user) {
+      throw new Error(
+        "The login response is missing the user or access token."
+      );
+    }
+
+    // ==========================================
+    // 3. EXTRACT BRANCH DETAILS
+    // ==========================================
+
+    // Supports branch data inside user (preferred),
+    // or as separate fields in the API response.
+
+    const branches = Array.isArray(user.branches)
+      ? user.branches
+      : Array.isArray(responseData?.branches)
+        ? responseData.branches
+        : [];
+
+    const branchIds = branches.map(
+      (branch) => branch.id
+    );
+
+    const allBranchesAccess = [
+      "ADMIN",
+      "SUPER_ADMIN",
+    ].includes(user.role);
+
+    // ==========================================
+    // 4. SELECT DEFAULT BRANCH
+    // ==========================================
+
+    // Keep previously selected branch only if
+    // it is accessible to this same user.
+    const previousUserId =
+      localStorage.getItem("userId");
+
+    const previousBranchId =
+      previousUserId === user.id
+        ? localStorage.getItem("selectedBranchId")
+        : null;
+
+    const previousBranch = branches.find(
+      (branch) => branch.id === previousBranchId
+    );
+
+    const mainBranch = branches.find(
+      (branch) => branch.isMain
+    );
+
+    const selectedBranch =
+      previousBranch ||
+      mainBranch ||
+      branches[0] ||
+      null;
+
+    const selectedBranchId =
+      selectedBranch?.id || "";
+
+    // ==========================================
+    // 5. SAVE AUTHENTICATION DATA
+    // ==========================================
+
+    localStorage.setItem(
+      "accessToken",
+      accessToken
+    );
+
+    localStorage.setItem(
+      "token",
+      accessToken
+    );
+
+    localStorage.setItem(
+      "userId",
+      user.id
+    );
+
+    localStorage.setItem(
+      "clinicId",
+      user.clinicId
+    );
+
+    // ==========================================
+    // 6. SAVE BRANCH INFORMATION
+    // ==========================================
+
+    const updatedUser = {
+      ...user,
+      branches,
+      branchIds,
+      allBranchesAccess,
+      defaultBranchId:
+        user.defaultBranchId || selectedBranchId,
+      selectedBranchId,
+    };
+
+    localStorage.setItem(
+      "user",
+      JSON.stringify(updatedUser)
+    );
+
+    // All accessible branches
+    localStorage.setItem(
+      "branches",
+      JSON.stringify(branches)
+    );
+
+    // Array of branch IDs
+    localStorage.setItem(
+      "branchIds",
+      JSON.stringify(branchIds)
+    );
+
+    // Admin permission
+    localStorage.setItem(
+      "allBranchesAccess",
+      JSON.stringify(allBranchesAccess)
+    );
+
+    // Currently selected branch ID
+    localStorage.setItem(
+      "selectedBranchId",
+      selectedBranchId
+    );
+
+    // Currently selected branch object
+    if (selectedBranch) {
+      localStorage.setItem(
+        "selectedBranch",
+        JSON.stringify(selectedBranch)
+      );
+    } else {
+      localStorage.removeItem("selectedBranch");
+    }
+
+    // ==========================================
+    // 7. DEBUG BRANCH INFORMATION
+    // ==========================================
+
+    console.log("[LOGIN] Login successful");
+
+    console.log("[LOGIN] User:", {
+      id: user.id,
+      role: user.role,
+      clinicId: user.clinicId,
+    });
+
+    console.log("[LOGIN] Branches received:", branches);
+
+    console.log("[LOGIN] Branch IDs:", branchIds);
+
+    console.log(
+      "[LOGIN] Selected branch:",
+      selectedBranch
+    );
+
+    console.log(
+      "[LOGIN] All branch access:",
+      allBranchesAccess
+    );
+
+    console.log("[LOGIN] Saved to localStorage:", {
+      userId: localStorage.getItem("userId"),
+      clinicId: localStorage.getItem("clinicId"),
+      branches: JSON.parse(
+        localStorage.getItem("branches") || "[]"
+      ),
+      branchIds: JSON.parse(
+        localStorage.getItem("branchIds") || "[]"
+      ),
+      selectedBranchId: localStorage.getItem(
+        "selectedBranchId"
+      ),
+    });
+
+    if (branches.length === 0) {
+      console.warn(
+        "[LOGIN] No accessible branches returned by login API. Check the backend login response and UserBranch assignments."
+      );
+    }
+
+    // ==========================================
+    // 8. REMEMBER EMAIL
+    // ==========================================
+
+    if (formData.rememberMe) {
+      localStorage.setItem(
+        "vetnearyRememberedEmail",
+        formData.email.trim()
+      );
+    } else {
+      localStorage.removeItem(
+        "vetnearyRememberedEmail"
+      );
+    }
+
+    // ==========================================
+    // 9. REDIRECT TO DASHBOARD
+    // ==========================================
+
+    navigate("/dashboard", {
+      replace: true,
+    });
+  } catch (error) {
+    console.error("[LOGIN] Error:", error.message);
+
+    setFormError(
+      error.message ||
+        "Unable to log in. Please try again."
+    );
+  } finally {
+    setIsSubmitting(false);
   }
+}
+
+
+ 
 
   return (
     <div className="login-page">
@@ -164,7 +370,7 @@ export default function Login() {
 
                 <span>
                   <span className="d-block fw-bold fs-5">
-                    Pokhara Pet Hospital
+                    Gandaki vet and pet
                   </span>
                   <small className="text-secondary">
                     Veterinary Clinic
@@ -227,7 +433,7 @@ export default function Login() {
 
                   <span>
                     <span className="d-block fw-bold">
-                      Pokhara Pet Hospital
+                      Gandaki vet and pet
                     </span>
                     <small className="text-secondary">
                       Veterinary Clinic

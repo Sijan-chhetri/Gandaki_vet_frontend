@@ -1,2696 +1,417 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-
-import {
-  AlertTriangle,
-  Barcode,
-  Boxes,
-  CheckCircle2,
-  Download,
-  Edit3,
-  FolderCog,
-  Package,
-  Plus,
-  RefreshCw,
-  Search,
-  Trash2,
-  TrendingDown,
-  X,
+  AlertTriangle, Barcode, Boxes, Building2, CalendarDays, CheckCircle2,
+  Download, Edit3, FolderCog, Package, Plus, RefreshCw, Search,
+  Trash2, TrendingDown, X,
 } from "lucide-react";
-
 import inventoryService from "../../services/inventory.service.js";
+import apiRequest from "../../services/api";
 
-const ITEM_TYPES = [
-  "MEDICINE",
-  "VACCINE",
-  "CONSUMABLE",
-  "DIAGNOSTIC",
-  "PET_FOOD",
-  "PET_CARE",
-  "SURGICAL_SUPPLY",
-  "OTHER",
-];
+// These values match enum InventoryItemType in schema.prisma.
+const ITEM_TYPES = ["MEDICINE", "VACCINE", "CONSUMABLE", "FOOD", "ACCESSORY", "EQUIPMENT", "OTHER"];
+const UNITS = ["Piece", "Box", "Bottle", "Vial", "Strip", "Kit", "Pack", "Bag", "Tube", "Can", "Tablet", "Capsule", "Millilitre"];
+const ADMIN_ROLES = new Set(["ADMIN", "SUPER_ADMIN"]);
 
-const UNITS = [
-  "Piece",
-  "Box",
-  "Bottle",
-  "Vial",
-  "Strip",
-  "Kit",
-  "Pack",
-  "Bag",
-  "Tube",
-  "Can",
-  "Tablet",
-  "Capsule",
-  "Millilitre",
-];
-
-const emptyItemForm = () => ({
-  name: "",
-  genericName: "",
-  type: "MEDICINE",
-  categoryId: "",
-  unit: "Piece",
-  purchasePrice: "",
-  sellingPrice: "",
-  openingStock: "",
-  reorderLevel: "",
-  taxPercent: "",
-  requiresBatch: false,
-  isActive: true,
-  sku: "",
-  barcode: "",
+const emptyItem = (branchId = "") => ({
+  branchId, name: "", genericName: "", type: "MEDICINE", categoryId: "",
+  unit: "Piece", purchasePrice: "", sellingPrice: "", openingStock: "",
+  reorderLevel: "", taxPercent: "", requiresBatch: false, isActive: true,
+  sku: "", barcode: "", expiryDate: "",
 });
-
-const emptyCategoryForm = () => ({
-  name: "",
-  description: "",
-});
-
-const emptyStockForm = () => ({
-  quantity: "",
-  reason: "",
-  batchId: "",
-});
-
-const emptyBatchForm = () => ({
-  batchNumber: "",
-  quantity: "",
-  costPrice: "",
-  manufactureDate: "",
-  expiryDate: "",
-  reason: "",
-});
-
-const money = (value) =>
-  `NPR ${Number(value || 0).toLocaleString(
-    "en-GB",
-    {
-      maximumFractionDigits: 2,
-    },
-  )}`;
-
-const displayType = (value = "") =>
-  value
-    .replaceAll("_", " ")
-    .toLowerCase()
-    .replace(/\b\w/g, (character) =>
-      character.toUpperCase(),
-    );
-
-const getStockStatus = (item) => {
-  if (!item.isActive) {
-    return "Inactive";
+const emptyCategory = () => ({ name: "", description: "" });
+const emptyBatch = () => ({ batchNumber: "", quantity: "", costPrice: "", manufactureDate: "", expiryDate: "", reason: "" });
+const emptyAdjustment = () => ({ quantity: "", batchId: "", reason: "" });
+const money = (v) => `NPR ${Number(v || 0).toLocaleString("en-GB", { maximumFractionDigits: 2 })}`;
+const titleCase = (s = "") => String(s).toLowerCase().replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
+const dateInput = (v) => (v ? String(v).slice(0, 10) : "");
+const dateLabel = (v) => dateInput(v) || "Not set";
+const stockStatus = (item) => !item.isActive ? "Inactive" : Number(item.currentStock) <= 0 ? "Out of Stock" : Number(item.currentStock) <= Number(item.reorderLevel) ? "Low Stock" : "In Stock";
+const statusColor = { "In Stock": "success", "Out of Stock": "danger", "Low Stock": "warning", Inactive: "secondary" };
+function getUser() {
+  try {
+    const stored = JSON.parse(localStorage.getItem("user") || "null");
+    return stored?.user || stored?.data?.user || stored?.data || stored;
   }
-
-  if (Number(item.currentStock) <= 0) {
-    return "Out of Stock";
+  catch { return null; }
+}
+function dataArray(response, keys = []) {
+  const root = response?.data?.data ?? response?.data ?? response;
+  for (const value of [root, response, ...keys.map((key) => root?.[key]), ...keys.map((key) => response?.[key])]) {
+    if (Array.isArray(value)) return value;
   }
-
-  if (
-    Number(item.currentStock) <=
-    Number(item.reorderLevel)
-  ) {
-    return "Low Stock";
-  }
-
-  return "In Stock";
-};
-
-const getStatusClass = (status) => {
-  const classes = {
-    "In Stock": "text-bg-success",
-    "Low Stock": "text-bg-warning",
-    "Out of Stock": "text-bg-danger",
-    Inactive: "text-bg-secondary",
+  return [];
+}
+function errorMessage(error) { return error?.message || "The request could not be completed."; }
+function cleanItem(form, editing) {
+  const data = {
+    branchId: form.branchId, name: form.name.trim(), genericName: form.genericName.trim() || null,
+    type: form.type, categoryId: form.categoryId || null, unit: form.unit,
+    purchasePrice: Number(form.purchasePrice || 0), sellingPrice: Number(form.sellingPrice || 0),
+    reorderLevel: Number(form.reorderLevel || 0), taxPercent: Number(form.taxPercent || 0),
+    requiresBatch: Boolean(form.requiresBatch), isActive: Boolean(form.isActive),
+    sku: form.sku.trim() || null, barcode: form.barcode.trim() || null,
+    expiryDate: form.expiryDate || null,
   };
+  if (!editing) data.currentStock = form.requiresBatch ? 0 : Number(form.openingStock || 0);
+  return data;
+}
 
-  return classes[status] || "text-bg-secondary";
-};
-
-const normaliseItemPayload = (
-  form,
-  isEditing,
-) => {
-  const payload = {
-    name: form.name.trim(),
-    genericName:
-      form.genericName.trim() || null,
-    type: form.type,
-    categoryId: form.categoryId || null,
-    unit: form.unit.trim(),
-    purchasePrice: Number(
-      form.purchasePrice || 0,
-    ),
-    sellingPrice: Number(
-      form.sellingPrice || 0,
-    ),
-    reorderLevel: Number(
-      form.reorderLevel || 0,
-    ),
-    taxPercent: Number(
-      form.taxPercent || 0,
-    ),
-    requiresBatch: Boolean(
-      form.requiresBatch,
-    ),
-    isActive: Boolean(form.isActive),
-
-    // These two fields are optional.
-    sku: form.sku.trim() || null,
-    barcode: form.barcode.trim() || null,
-  };
-
-  if (!isEditing) {
-    payload.currentStock =
-      form.requiresBatch
-        ? 0
-        : Number(form.openingStock || 0);
-  }
-
-  return payload;
-};
+function Modal({ title, children, onClose, size = "modal-lg" }) {
+  return <>
+    <div className="modal fade show d-block" tabIndex={-1} role="dialog" aria-modal="true">
+      <div className={`modal-dialog ${size} modal-dialog-centered modal-dialog-scrollable`}>
+        <div className="modal-content border-0 shadow">
+          <div className="modal-header"><h5 className="modal-title fw-bold">{title}</h5>
+            <button type="button" className="btn btn-light" onClick={onClose} aria-label="Close"><X size={18}/></button>
+          </div>
+          <div className="modal-body p-4">{children}</div>
+        </div>
+      </div>
+    </div>
+    <div className="modal-backdrop fade show" />
+  </>;
+}
+function Field({ label, value, onChange, type = "text", required = false, min, step, disabled = false, children, help }) {
+  return <div className="col-md-6">
+    <label className="form-label fw-semibold small">{label}</label>
+    {children || <input className="form-control" type={type} value={value ?? ""} onChange={(e) => onChange(e.target.value)} required={required} min={min} step={step} disabled={disabled} />}
+    {help && <small className="text-secondary">{help}</small>}
+  </div>;
+}
+function Actions({ busy, onCancel, label = "Save" }) {
+  return <div className="d-flex justify-content-end gap-2 mt-4">
+    <button className="btn btn-light border" type="button" onClick={onCancel}>Cancel</button>
+    <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? "Saving..." : label}</button>
+  </div>;
+}
 
 export default function Inventory() {
+  const role = String(getUser()?.role || "").toUpperCase();
+  const isAdmin = ADMIN_ROLES.has(role);
+  const [branches, setBranches] = useState([]);
+  const [branchLoading, setBranchLoading] = useState(true);
+  const [selectedBranch, setSelectedBranch] = useState("");
   const [items, setItems] = useState([]);
-  const [categories, setCategories] =
-    useState([]);
+  const [categories, setCategories] = useState([]);
   const [stats, setStats] = useState(null);
-
-  const [pagination, setPagination] =
-    useState({
-      page: 1,
-      limit: 20,
-      total: 0,
-      totalPages: 1,
-    });
-
-  const [filters, setFilters] = useState({
-    search: "",
-    categoryId: "",
-    type: "",
-    stockStatus: "",
-    isActive: "true",
-  });
-
-  const [loading, setLoading] =
-    useState(true);
-  const [saving, setSaving] =
-    useState(false);
+  const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, totalPages: 1 });
+  const [filters, setFilters] = useState({ search: "", categoryId: "", type: "", stockStatus: "", isActive: "true" });
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] =
-    useState("");
+  const [success, setSuccess] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [itemModal, setItemModal] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
+  const [form, setForm] = useState(emptyItem());
+  const [categoryModal, setCategoryModal] = useState(false);
+  const [editingCategory, setEditingCategory] = useState(null);
+  const [categoryForm, setCategoryForm] = useState(emptyCategory());
+  const [batchItem, setBatchItem] = useState(null);
+  const [batchForm, setBatchForm] = useState(emptyBatch());
+  const [stockItem, setStockItem] = useState(null);
+  const [stockMode, setStockMode] = useState("add");
+  const [stockBatches, setStockBatches] = useState([]);
+  const [stockForm, setStockForm] = useState(emptyAdjustment());
+  const [details, setDetails] = useState(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [search, setSearch] = useState("");
 
-  const [itemModal, setItemModal] =
-    useState(false);
-  const [editingItem, setEditingItem] =
-    useState(null);
-  const [itemForm, setItemForm] =
-    useState(emptyItemForm());
-
-  const [
-    categoryManagerOpen,
-    setCategoryManagerOpen,
-  ] = useState(false);
-
-  const [
-    editingCategory,
-    setEditingCategory,
-  ] = useState(null);
-
-  const [categoryForm, setCategoryForm] =
-    useState(emptyCategoryForm());
-
-  const [stockModal, setStockModal] =
-    useState(null);
-  const [stockForm, setStockForm] =
-    useState(emptyStockForm());
-
-  const [batchModal, setBatchModal] =
-    useState(null);
-  const [batchForm, setBatchForm] =
-    useState(emptyBatchForm());
-
-  const [details, setDetails] =
-    useState(null);
-  const [detailsLoading, setDetailsLoading] =
-    useState(false);
-
-  const loadCategories = useCallback(
-    async () => {
-      const result =
-        await inventoryService.getCategories();
-
-      setCategories(result.data || []);
-    },
-    [],
-  );
-
-  const loadStats = useCallback(async () => {
-    const result =
-      await inventoryService.getStats();
-
-    setStats(result.data || null);
-  }, []);
-
-  const loadItems = useCallback(
-    async (page = 1) => {
-      const result =
-        await inventoryService.getItems({
-          page,
-          limit: pagination.limit,
-          search: filters.search.trim(),
-          categoryId: filters.categoryId,
-          type: filters.type,
-          stockStatus: filters.stockStatus,
-          isActive: filters.isActive,
-          sortBy: "createdAt",
-          sortOrder: "desc",
-        });
-
-      setItems(result.data || []);
-      setPagination((previous) => ({
-        ...previous,
-        ...(result.pagination || {}),
-      }));
-    },
-    [
-      filters,
-      pagination.limit,
-    ],
-  );
-
-  const reloadPage = useCallback(
-    async (page = pagination.page) => {
-      try {
-        setLoading(true);
-        setError("");
-
-        await Promise.all([
-          loadItems(page),
-          loadCategories(),
-          loadStats(),
-        ]);
-      } catch (requestError) {
-        setError(
-          requestError.message ||
-            "Unable to load inventory.",
-        );
-      } finally {
-        setLoading(false);
-      }
-    },
-    [
-      loadCategories,
-      loadItems,
-      loadStats,
-      pagination.page,
-    ],
-  );
+  const alert = (message) => { setError(message); setSuccess(""); };
+  const updateForm = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  const updateCategoryForm = (key, value) => setCategoryForm((f) => ({ ...f, [key]: value }));
+  const updateBatchForm = (key, value) => setBatchForm((f) => ({ ...f, [key]: value }));
+  const updateStockForm = (key, value) => setStockForm((f) => ({ ...f, [key]: value }));
+  const branchName = (id) => branches.find((b) => b.id === id)?.name || "Unassigned";
+  const selectedBranchName = selectedBranch === "all" ? "All branches" : branchName(selectedBranch);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      reloadPage(1);
-    }, 300);
+    let cancelled = false;
+    (async () => {
+      setBranchLoading(true);
+      try {
+        // Admins may need GET /branches to see every branch; staff use their assignments.
+        let response;
+        if (isAdmin) {
+          try { response = await apiRequest("/branches"); }
+          catch { response = await apiRequest("/users/me/branches"); }
+        } else {
+          response = await apiRequest("/users/me/branches");
+        }
+        if (cancelled) return;
+        const list = dataArray(response, ["branches"]).filter((b) => b?.id && b.isActive !== false);
+        setBranches(list);
+        setSelectedBranch((old) => old && (old === "all" || list.some((b) => b.id === old)) ? old : isAdmin ? "all" : list.length === 1 ? list[0].id : "all");
+      } catch (e) { if (!cancelled) alert(`Unable to load branches: ${errorMessage(e)}`); }
+      finally { if (!cancelled) setBranchLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [isAdmin]);
 
-    return () =>
-      window.clearTimeout(timer);
-  }, [
-    filters.search,
-    filters.categoryId,
-    filters.type,
-    filters.stockStatus,
-    filters.isActive,
-  ]);
+  const loadCategories = useCallback(async () => {
+    const response = await inventoryService.getCategories();
+    setCategories(dataArray(response, ["categories"]));
+  }, []);
 
-  const attentionItems = useMemo(
-    () =>
-      items
-        .filter((item) =>
-          [
-            "Low Stock",
-            "Out of Stock",
-          ].includes(getStockStatus(item)),
-        )
-        .slice(0, 5),
-    [items],
-  );
+  const loadPage = useCallback(async (page = 1) => {
+    if (!selectedBranch) return;
+    setLoading(true);
+    setError("");
+    try {
+      // Filter and summary APIs must accept branchId in inventory.service.js.
+      const params = { ...filters, search: search.trim(), branchId: selectedBranch, page, limit: pagination.limit, sortBy: "createdAt", sortOrder: "desc" };
+      const [listResult, categoryResult, statsResult] = await Promise.all([
+        inventoryService.getItems(params),
+        inventoryService.getCategories(),
+        inventoryService.getStats({ branchId: selectedBranch }),
+      ]);
+      setItems(dataArray(listResult, ["items"]));
+      setCategories(dataArray(categoryResult, ["categories"]));
+      setStats(statsResult?.data?.data ?? statsResult?.data ?? null);
+      setPagination((p) => ({ ...p, ...(listResult?.pagination || listResult?.data?.pagination || {}), page }));
+    } catch (e) { alert(errorMessage(e)); }
+    finally { setLoading(false); }
+  }, [selectedBranch, filters, search, pagination.limit]);
 
-  const openCreateItem = () => {
+  useEffect(() => {
+    if (branchLoading || !selectedBranch) return undefined;
+    const timer = window.setTimeout(() => { loadPage(1); }, 250);
+    return () => window.clearTimeout(timer);
+  }, [branchLoading, selectedBranch, filters, search, refreshKey, loadPage]);
+
+  const refresh = () => setRefreshKey((k) => k + 1);
+  const showCreate = () => {
     setEditingItem(null);
-    setItemForm(emptyItemForm());
-    setError("");
-    setItemModal(true);
+    const branchId = selectedBranch === "all" ? (branches.length === 1 ? branches[0].id : "") : selectedBranch;
+    setForm(emptyItem(branchId)); setError(""); setItemModal(true);
   };
-
-  const openEditItem = (item) => {
+  const showEdit = (item) => {
     setEditingItem(item);
-
-    setItemForm({
-      name: item.name || "",
-      genericName: item.genericName || "",
-      type: item.type || "MEDICINE",
-      categoryId: item.categoryId || "",
-      unit: item.unit || "Piece",
-      purchasePrice:
-        Number(item.purchasePrice) || "",
-      sellingPrice:
-        Number(item.sellingPrice) || "",
-      openingStock: "",
-      reorderLevel:
-        Number(item.reorderLevel) || "",
-      taxPercent:
-        Number(item.taxPercent) || "",
-      requiresBatch: Boolean(
-        item.requiresBatch,
-      ),
-      isActive: Boolean(item.isActive),
-      sku: item.sku || "",
-      barcode: item.barcode || "",
+    setForm({
+      ...emptyItem(item.branchId || ""),
+      name: item.name || "", genericName: item.genericName || "", type: item.type || "MEDICINE",
+      categoryId: item.categoryId || "", unit: item.unit || "Piece",
+      purchasePrice: String(item.purchasePrice ?? ""), sellingPrice: String(item.sellingPrice ?? ""),
+      reorderLevel: String(item.reorderLevel ?? ""), taxPercent: String(item.taxPercent ?? ""),
+      requiresBatch: Boolean(item.requiresBatch), isActive: Boolean(item.isActive),
+      sku: item.sku || "", barcode: item.barcode || "", expiryDate: dateInput(item.expiryDate),
     });
-
-    setError("");
-    setItemModal(true);
+    setError(""); setItemModal(true);
   };
 
-  const submitItem = async (event) => {
-    event.preventDefault();
-
-    if (!itemForm.name.trim()) {
-      setError("Item name is required.");
-      return;
-    }
-
-    if (!itemForm.unit.trim()) {
-      setError("Unit is required.");
-      return;
-    }
-
+  async function submitItem(e) {
+    e.preventDefault();
+    if (!form.branchId || form.branchId === "all") return alert("Choose a real branch for this item.");
+    if (!branches.some((b) => b.id === form.branchId)) return alert("Selected branch is not accessible.");
+    if (!form.name.trim() || !form.unit.trim()) return alert("Name and unit are required.");
+    if (!ITEM_TYPES.includes(form.type)) return alert("Invalid inventory item type.");
+    if (form.expiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(form.expiryDate)) return alert("Invalid expiry date.");
+    if (!editingItem && Number(form.openingStock || 0) < 0) return alert("Opening stock cannot be negative.");
+    setSaving(true); setError(""); setSuccess("");
     try {
-      setSaving(true);
-      setError("");
-      setSuccess("");
-
-      const payload = normaliseItemPayload(
-        itemForm,
-        Boolean(editingItem),
-      );
-
+      const payload = cleanItem(form, Boolean(editingItem));
       if (editingItem) {
-        await inventoryService.updateItem(
-          editingItem.id,
-          payload,
-        );
-
-        setSuccess(
-          "Inventory item updated successfully.",
-        );
+        // Item transfers across branches need their own audited workflow.
+        await inventoryService.updateItem(editingItem.id, payload);
+        setSuccess("Inventory item updated successfully.");
       } else {
-        const response =
-          await inventoryService.createItem(
-            payload,
-          );
-
-        const createdItem = response.data;
-
-        // A batch-tracked item starts at zero.
-        // Open the batch form immediately so
-        // opening stock is recorded correctly.
-        if (
-          itemForm.requiresBatch &&
-          Number(itemForm.openingStock) > 0
-        ) {
-          setBatchModal(createdItem);
-
-          setBatchForm({
-            ...emptyBatchForm(),
-            quantity: itemForm.openingStock,
-            costPrice:
-              itemForm.purchasePrice || "",
-            reason: "Opening batch stock",
-          });
+        const result = await inventoryService.createItem(payload);
+        const created = result?.data?.data || result?.data || result;
+        if (form.requiresBatch && Number(form.openingStock) > 0) {
+          setBatchItem(created);
+          setBatchForm({ ...emptyBatch(), quantity: form.openingStock, costPrice: form.purchasePrice, expiryDate: form.expiryDate, reason: "Opening batch stock" });
         }
-
-        setSuccess(
-          "Inventory item created successfully.",
-        );
+        setSuccess("Inventory item created successfully.");
       }
+      setItemModal(false); refresh();
+    } catch (e2) { alert(errorMessage(e2)); }
+    finally { setSaving(false); }
+  }
 
-      setItemModal(false);
-      await reloadPage(1);
-    } catch (requestError) {
-      setError(
-        requestError.message ||
-          "Unable to save inventory item.",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const removeItem = async (item) => {
-    const confirmed = window.confirm(
-      `Delete "${item.name}"? Items with available stock cannot be deleted.`,
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
+  async function deleteItem(item) {
+    if (!window.confirm(`Delete ${item.name} from ${branchName(item.branchId)}? Items with stock cannot be deleted.`)) return;
+    try { await inventoryService.deleteItem(item.id); setSuccess("Item deleted."); refresh(); }
+    catch (e) { alert(errorMessage(e)); }
+  }
+  async function showDetails(item) {
+    setDetails(item); setDetailsLoading(true);
+    try { const result = await inventoryService.getItem(item.id); setDetails(result?.data?.data || result?.data || result); }
+    catch (e) { setDetails(null); alert(errorMessage(e)); }
+    finally { setDetailsLoading(false); }
+  }
+  async function showAdjustment(item, mode) {
     try {
-      setError("");
-      setSuccess("");
-
-      await inventoryService.deleteItem(
-        item.id,
-      );
-
-      setSuccess(
-        "Inventory item deleted successfully.",
-      );
-
-      await reloadPage(1);
-    } catch (requestError) {
-      setError(
-        requestError.message ||
-          "Unable to delete inventory item.",
-      );
-    }
-  };
-
-  const openDetails = async (item) => {
+      const result = item.requiresBatch ? await inventoryService.getBatches(item.id) : { data: [] };
+      setStockBatches(dataArray(result, ["batches"]));
+      setStockItem(item); setStockMode(mode); setStockForm(emptyAdjustment()); setError("");
+    } catch (e) { alert(errorMessage(e)); }
+  }
+  async function submitAdjustment(e) {
+    e.preventDefault();
+    if (!(Number(stockForm.quantity) > 0)) return alert("Quantity must be greater than zero.");
+    if (stockItem.requiresBatch && !stockForm.batchId) return alert("Choose a batch for this item.");
+    setSaving(true); setError("");
     try {
-      setDetailsLoading(true);
-      setError("");
-      setDetails({ ...item });
-
-      const result =
-        await inventoryService.getItem(item.id);
-
-      setDetails(result.data);
-    } catch (requestError) {
-      setDetails(null);
-      setError(
-        requestError.message ||
-          "Unable to load inventory details.",
-      );
-    } finally {
-      setDetailsLoading(false);
-    }
-  };
-
-  const openStockAdjustment = async (
-    item,
-    mode,
-  ) => {
-    try {
-      setError("");
-
-      const batchResult = item.requiresBatch
-        ? await inventoryService.getBatches(
-            item.id,
-          )
-        : { data: [] };
-
-      setStockModal({
-        item,
-        mode,
-        batches: batchResult.data || [],
+      await inventoryService.adjustStock(stockItem.id, {
+        branchId: stockItem.branchId,
+        type: stockMode === "add" ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT",
+        quantity: Number(stockForm.quantity), batchId: stockForm.batchId || null,
+        reason: stockForm.reason.trim() || null, referenceType: "MANUAL_ADJUSTMENT",
       });
-
-      setStockForm(emptyStockForm());
-    } catch (requestError) {
-      setError(
-        requestError.message ||
-          "Unable to load batches.",
-      );
-    }
-  };
-
-  const submitStockAdjustment = async (
-    event,
-  ) => {
-    event.preventDefault();
-
-    const quantity = Number(
-      stockForm.quantity,
-    );
-
-    if (!quantity || quantity <= 0) {
-      setError(
-        "Stock quantity must be greater than zero.",
-      );
-      return;
-    }
-
-    if (
-      stockModal.item.requiresBatch &&
-      !stockForm.batchId
-    ) {
-      setError(
-        "Select a batch for this batch-tracked item.",
-      );
-      return;
-    }
-
-    try {
-      setSaving(true);
-      setError("");
-      setSuccess("");
-
-      await inventoryService.adjustStock(
-        stockModal.item.id,
-        {
-          type:
-            stockModal.mode === "add"
-              ? "ADJUSTMENT_IN"
-              : "ADJUSTMENT_OUT",
-          quantity,
-          batchId:
-            stockForm.batchId || null,
-          reason:
-            stockForm.reason.trim() ||
-            null,
-          referenceType:
-            "MANUAL_ADJUSTMENT",
-        },
-      );
-
-      setStockModal(null);
-      setSuccess(
-        "Stock adjusted successfully.",
-      );
-
-      await reloadPage();
-    } catch (requestError) {
-      setError(
-        requestError.message ||
-          "Unable to adjust stock.",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const openBatchForm = (item) => {
-    setBatchModal(item);
-    setBatchForm({
-      ...emptyBatchForm(),
-      costPrice:
-        Number(item.purchasePrice) || "",
-    });
+      setStockItem(null); setSuccess("Stock adjusted successfully."); refresh();
+    } catch (e2) { alert(errorMessage(e2)); }
+    finally { setSaving(false); }
+  }
+  function showBatch(item) {
+    setBatchItem(item);
+    setBatchForm({ ...emptyBatch(), costPrice: String(item.purchasePrice ?? "") });
     setError("");
-  };
-
-  const submitBatch = async (event) => {
-    event.preventDefault();
-
-    if (!batchForm.batchNumber.trim()) {
-      setError(
-        "Batch number is required.",
-      );
-      return;
-    }
-
-    if (
-      Number(batchForm.quantity) <= 0
-    ) {
-      setError(
-        "Batch quantity must be greater than zero.",
-      );
-      return;
-    }
-
+  }
+  async function submitBatch(e) {
+    e.preventDefault();
+    if (!batchForm.batchNumber.trim() || !(Number(batchForm.quantity) > 0)) return alert("Batch number and positive quantity are required.");
+    if (batchForm.manufactureDate && batchForm.expiryDate && batchForm.expiryDate <= batchForm.manufactureDate) return alert("Expiry must be after manufacture date.");
+    setSaving(true); setError("");
     try {
-      setSaving(true);
-      setError("");
-      setSuccess("");
-
-      await inventoryService.createBatch(
-        batchModal.id,
-        {
-          batchNumber:
-            batchForm.batchNumber.trim(),
-          quantity: Number(
-            batchForm.quantity,
-          ),
-          costPrice: Number(
-            batchForm.costPrice || 0,
-          ),
-          manufactureDate:
-            batchForm.manufactureDate ||
-            null,
-          expiryDate:
-            batchForm.expiryDate || null,
-          reason:
-            batchForm.reason.trim() ||
-            "Stock batch received",
-        },
-      );
-
-      setBatchModal(null);
-      setSuccess(
-        "Inventory batch created and stock added successfully.",
-      );
-
-      await reloadPage();
-    } catch (requestError) {
-      setError(
-        requestError.message ||
-          "Unable to create inventory batch.",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const resetCategoryForm = () => {
-    setEditingCategory(null);
-    setCategoryForm(emptyCategoryForm());
-  };
-
-  const editCategory = (category) => {
+      await inventoryService.createBatch(batchItem.id, {
+        branchId: batchItem.branchId, batchNumber: batchForm.batchNumber.trim(),
+        quantity: Number(batchForm.quantity), costPrice: Number(batchForm.costPrice || 0),
+        manufactureDate: batchForm.manufactureDate || null, expiryDate: batchForm.expiryDate || null,
+        reason: batchForm.reason.trim() || "Batch stock received",
+      });
+      setBatchItem(null); setSuccess("Batch created successfully."); refresh();
+    } catch (e2) { alert(errorMessage(e2)); }
+    finally { setSaving(false); }
+  }
+  function showCategoryManager(category = null) {
     setEditingCategory(category);
-    setCategoryForm({
-      name: category.name || "",
-      description:
-        category.description || "",
-    });
-  };
-
-  const submitCategory = async (event) => {
-    event.preventDefault();
-
-    if (!categoryForm.name.trim()) {
-      setError(
-        "Category name is required.",
-      );
-      return;
-    }
-
+    setCategoryForm(category ? { name: category.name, description: category.description || "" } : emptyCategory());
+    setCategoryModal(true); setError("");
+  }
+  async function submitCategory(e) {
+    e.preventDefault();
+    if (!categoryForm.name.trim()) return alert("Category name is required.");
+    setSaving(true); setError("");
     try {
-      setSaving(true);
-      setError("");
-      setSuccess("");
+      const payload = { name: categoryForm.name.trim(), description: categoryForm.description.trim() || null };
+      if (editingCategory) await inventoryService.updateCategory(editingCategory.id, payload);
+      else await inventoryService.createCategory(payload);
+      setEditingCategory(null); setCategoryForm(emptyCategory());
+      await loadCategories(); setSuccess("Category saved successfully.");
+    } catch (e2) { alert(errorMessage(e2)); }
+    finally { setSaving(false); }
+  }
+  async function deleteCategory(category) {
+    if (!window.confirm(`Delete category ${category.name}?`)) return;
+    try { await inventoryService.deleteCategory(category.id); setSuccess("Category deleted."); await loadCategories(); refresh(); }
+    catch (e) { alert(errorMessage(e)); }
+  }
+  async function exportCsv() {
+    try { await inventoryService.exportCsv({ branchId: selectedBranch }); }
+    catch (e) { alert(errorMessage(e)); }
+  }
 
-      const payload = {
-        name: categoryForm.name.trim(),
-        description:
-          categoryForm.description.trim() ||
-          null,
-      };
+  const attention = useMemo(() => items.filter((i) => ["Low Stock", "Out of Stock"].includes(stockStatus(i))).slice(0, 5), [items]);
+  return <div className="container-fluid py-4">
+    <div className="rounded-4 border bg-white p-4 mb-4">
+      <div className="row align-items-center g-3">
+        <div className="col-xl-7">
+          <span className="badge bg-primary-subtle text-primary mb-2"><Boxes size={15} className="me-1"/>Branch-wise clinic inventory</span>
+          <h2 className="fw-bold mb-1">Inventory management</h2>
+          <p className="text-secondary mb-3">Manage medicines, batches, optional expiry dates and stock independently for each branch.</p>
+          <div className="d-flex gap-2 flex-wrap">
+            <button className="btn btn-primary" onClick={showCreate} disabled={branchLoading || !branches.length}><Plus size={16} className="me-2"/>Add item</button>
+            <button className="btn btn-light border" onClick={() => showCategoryManager()}><FolderCog size={16} className="me-2"/>Categories</button>
+            <button className="btn btn-light border" onClick={exportCsv} disabled={!selectedBranch}><Download size={16} className="me-2"/>Export CSV</button>
+          </div>
+        </div>
+        <div className="col-xl-5">
+          <div className="row g-2">
+            {[["Total items", stats?.totalItems, Package], ["Low stock", stats?.lowStockItems, TrendingDown], ["Out of stock", stats?.outOfStockItems, AlertTriangle], ["Cost value", money(stats?.stockValue?.cost), CheckCircle2]].map(([label, value, Icon]) => <div key={label} className="col-6"><div className="border rounded-3 p-3 h-100"><Icon size={18} className="text-primary mb-2"/><div className="small text-secondary">{label}</div><div className="fw-bold">{value ?? 0}</div></div></div>)}
+          </div>
+        </div>
+      </div>
+    </div>
+    {error && <div className="alert alert-danger d-flex justify-content-between"><span>{error}</span><button className="btn-close" onClick={() => setError("")} /></div>}
+    {success && <div className="alert alert-success d-flex justify-content-between"><span>{success}</span><button className="btn-close" onClick={() => setSuccess("")} /></div>}
+    <div className="card border-0 shadow-sm rounded-4 mb-4"><div className="card-body p-4"><div className="row g-3">
+      <div className="col-lg-4"><label className="form-label fw-semibold">Branch</label><div className="input-group"><span className="input-group-text bg-white"><Building2 size={17}/></span><select className="form-select" value={selectedBranch} onChange={(e) => { setSelectedBranch(e.target.value); setPagination((p) => ({ ...p, page: 1 })); }} disabled={branchLoading}>
+        {branches.length !== 1 && <option value="all">All accessible branches</option>}
+        {branches.map((b) => <option key={b.id} value={b.id}>{b.name}{b.isMain ? " (Main)" : ""}</option>)}
+      </select></div></div>
+      <div className="col-lg-4"><label className="form-label fw-semibold">Search inventory</label><div className="input-group"><span className="input-group-text bg-white"><Search size={17}/></span><input className="form-control" placeholder="Name, SKU, barcode" value={search} onChange={(e) => setSearch(e.target.value)}/></div></div>
+      <div className="col-lg-2"><label className="form-label fw-semibold">Item type</label><select className="form-select" value={filters.type} onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))}><option value="">All types</option>{ITEM_TYPES.map((t) => <option key={t} value={t}>{titleCase(t)}</option>)}</select></div>
+      <div className="col-lg-2"><label className="form-label fw-semibold">Stock status</label><select className="form-select" value={filters.stockStatus} onChange={(e) => setFilters((f) => ({ ...f, stockStatus: e.target.value }))}><option value="">All levels</option><option value="low-stock">Low stock</option><option value="out-of-stock">Out of stock</option></select></div>
+      <div className="col-lg-4"><label className="form-label fw-semibold">Category</label><select className="form-select" value={filters.categoryId} onChange={(e) => setFilters((f) => ({ ...f, categoryId: e.target.value }))}><option value="">All categories</option>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+      <div className="col-lg-3"><label className="form-label fw-semibold">Activity</label><select className="form-select" value={filters.isActive} onChange={(e) => setFilters((f) => ({ ...f, isActive: e.target.value }))}><option value="">All items</option><option value="true">Active</option><option value="false">Inactive</option></select></div>
+      <div className="col-lg-5 d-flex align-items-end justify-content-end gap-2"><button className="btn btn-light border" onClick={() => { setFilters({ search: "", categoryId: "", type: "", stockStatus: "", isActive: "true" }); setSearch(""); }}>Reset filters</button><button className="btn btn-outline-primary" onClick={refresh}><RefreshCw size={16} className="me-1"/>Refresh</button></div>
+    </div></div></div>
+    {attention.length > 0 && <div className="alert alert-warning rounded-4"><AlertTriangle size={18} className="me-2"/><strong>Stock attention:</strong> {attention.map((i) => `${i.name} (${branchName(i.branchId)})`).join(", ")}</div>}
+    <div className="card border-0 shadow-sm rounded-4 overflow-hidden">
+      <div className="card-header bg-white p-3 d-flex justify-content-between"><strong>Inventory records — {selectedBranchName}</strong><small className="text-secondary">{pagination.total} items</small></div>
+      <div className="table-responsive"><table className="table table-hover align-middle mb-0"><thead className="table-light"><tr><th className="ps-3">Item</th><th>Branch</th><th>Category</th><th>Stock</th><th>Expiry date</th><th>Price</th><th>Status</th><th className="text-end pe-3">Actions</th></tr></thead><tbody>
+        {loading ? <tr><td colSpan={8} className="py-5 text-center">Loading inventory...</td></tr> : items.length === 0 ? <tr><td colSpan={8} className="py-5 text-center text-secondary">No inventory found for the selected branch and filters.</td></tr> : items.map((item) => <tr key={item.id}>
+          <td className="ps-3"><button className="btn btn-link p-0 fw-semibold text-decoration-none text-start" onClick={() => showDetails(item)}>{item.name}</button><div className="small text-secondary">{item.genericName || titleCase(item.type)} · {item.sku || "No SKU"}</div></td>
+          <td><Building2 size={14} className="me-1"/>{item.branch?.name || branchName(item.branchId)}</td>
+          <td>{item.category?.name || "—"}</td><td><strong>{Number(item.currentStock)}</strong> {item.unit}<div className="small text-secondary">Reorder: {Number(item.reorderLevel)}</div></td>
+          <td><ExpiryText date={item.expiryDate}/>{item.requiresBatch && <div className="small text-primary">Batch tracked</div>}</td>
+          <td>{money(item.sellingPrice)}<div className="small text-secondary">Cost: {money(item.purchasePrice)}</div></td>
+          <td><span className={`badge text-bg-${statusColor[stockStatus(item)]}`}>{stockStatus(item)}</span></td>
+          <td className="text-end pe-3"><div className="dropdown"><button className="btn btn-sm btn-light border dropdown-toggle" data-bs-toggle="dropdown" type="button">Actions</button><ul className="dropdown-menu dropdown-menu-end shadow-sm">
+            <li><button className="dropdown-item" onClick={() => showDetails(item)}>View details</button></li><li><button className="dropdown-item" onClick={() => showEdit(item)}>Edit item</button></li>
+            {item.requiresBatch && <li><button className="dropdown-item" onClick={() => showBatch(item)}>Add batch</button></li>}
+            <li><button className="dropdown-item" onClick={() => showAdjustment(item, "add")}>Add stock</button></li><li><button className="dropdown-item" onClick={() => showAdjustment(item, "remove")}>Remove stock</button></li>
+            <li><hr className="dropdown-divider"/></li><li><button className="dropdown-item text-danger" onClick={() => deleteItem(item)}>Delete item</button></li>
+          </ul></div></td>
+        </tr>)}
+      </tbody></table></div>
+      <div className="card-footer bg-white d-flex align-items-center justify-content-between p-3"><small>Page {pagination.page} of {Math.max(1, pagination.totalPages || 1)}</small><div className="btn-group"><button className="btn btn-sm btn-outline-secondary" disabled={loading || pagination.page <= 1} onClick={() => loadPage(pagination.page - 1)}>Previous</button><button className="btn btn-sm btn-outline-secondary" disabled={loading || pagination.page >= pagination.totalPages} onClick={() => loadPage(pagination.page + 1)}>Next</button></div></div>
+    </div>
 
-      if (editingCategory) {
-        await inventoryService.updateCategory(
-          editingCategory.id,
-          payload,
-        );
+    {itemModal && <Modal title={editingItem ? "Edit inventory item" : "Add inventory item"} size="modal-xl" onClose={() => setItemModal(false)}><form onSubmit={submitItem}>
+      <h6 className="fw-bold border-bottom pb-2">Branch and item details</h6><div className="row g-3">
+        <Field label="Branch (required)" help={editingItem ? "Branch cannot be changed by editing an item. Use a dedicated stock transfer workflow." : "Items and stock are stored separately for each branch."}>
+          <select className="form-select" required value={form.branchId} disabled={Boolean(editingItem)} onChange={(e) => updateForm("branchId", e.target.value)}><option value="">Select branch</option>{branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select>
+        </Field>
+        <Field label="Item name" value={form.name} required onChange={(v) => updateForm("name", v)}/><Field label="Generic name (optional)" value={form.genericName} onChange={(v) => updateForm("genericName", v)}/>
+        <Field label="Item type"><select className="form-select" value={form.type} onChange={(e) => updateForm("type", e.target.value)}>{ITEM_TYPES.map((t) => <option key={t} value={t}>{titleCase(t)}</option>)}</select></Field>
+        <Field label="Category"><select className="form-select" value={form.categoryId} onChange={(e) => updateForm("categoryId", e.target.value)}><option value="">No category</option>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+        <Field label="Unit"><select className="form-select" value={form.unit} onChange={(e) => updateForm("unit", e.target.value)}>{UNITS.map((u) => <option key={u} value={u}>{u}</option>)}</select></Field>
+      </div>
+      <h6 className="fw-bold border-bottom pb-2 mt-4">Stock, pricing and expiry</h6><div className="row g-3">
+        {!editingItem && <Field label={form.requiresBatch ? "Opening stock for first batch" : "Opening stock"} type="number" min="0" step="0.01" value={form.openingStock} onChange={(v) => updateForm("openingStock", v)} help={form.requiresBatch ? "The first batch will be created after saving the item." : "Optional; leave empty for zero."}/>}
+        <Field label="Reorder level" type="number" min="0" step="0.01" value={form.reorderLevel} onChange={(v) => updateForm("reorderLevel", v)}/><Field label="Purchase price" type="number" min="0" step="0.01" value={form.purchasePrice} onChange={(v) => updateForm("purchasePrice", v)}/>
+        <Field label="Selling price" type="number" min="0" step="0.01" value={form.sellingPrice} onChange={(v) => updateForm("sellingPrice", v)}/><Field label="Tax percent" type="number" min="0" step="0.01" value={form.taxPercent} onChange={(v) => updateForm("taxPercent", v)}/>
+        <Field label="Expiry date (optional)" type="date" value={form.expiryDate} onChange={(v) => updateForm("expiryDate", v)} help="Leave blank for items without expiry. Batch expiry dates can be recorded separately."/>
+      </div>
+      <h6 className="fw-bold border-bottom pb-2 mt-4">Identifiers and settings</h6><div className="row g-3">
+        <Field label="SKU (optional)" value={form.sku} onChange={(v) => updateForm("sku", v)}/><Field label="Barcode (optional)" value={form.barcode} onChange={(v) => updateForm("barcode", v)}/>
+      </div><div className="d-flex gap-4 mt-3">
+        <label className="form-check"><input className="form-check-input" type="checkbox" checked={form.requiresBatch} disabled={Boolean(editingItem && Number(editingItem.currentStock) > 0)} onChange={(e) => updateForm("requiresBatch", e.target.checked)}/> <span className="form-check-label">Requires batch tracking</span></label>
+        <label className="form-check"><input className="form-check-input" type="checkbox" checked={form.isActive} onChange={(e) => updateForm("isActive", e.target.checked)}/> <span className="form-check-label">Active item</span></label>
+      </div><Actions busy={saving} onCancel={() => setItemModal(false)} label={editingItem ? "Save changes" : "Create item"}/>
+    </form></Modal>}
 
-        setSuccess(
-          "Category updated successfully.",
-        );
-      } else {
-        await inventoryService.createCategory(
-          payload,
-        );
+    {categoryModal && <Modal title="Inventory categories" onClose={() => setCategoryModal(false)}><form onSubmit={submitCategory} className="border rounded-3 p-3 mb-3"><h6>{editingCategory ? "Edit category" : "Add category"}</h6><div className="row g-3"><Field label="Category name" required value={categoryForm.name} onChange={(v) => updateCategoryForm("name", v)}/><Field label="Description" value={categoryForm.description} onChange={(v) => updateCategoryForm("description", v)}/></div><div className="d-flex justify-content-end gap-2 mt-3"><button className="btn btn-light border" type="button" onClick={() => { setEditingCategory(null); setCategoryForm(emptyCategory()); }}>Clear</button><button className="btn btn-primary" type="submit" disabled={saving}>Save category</button></div></form><div className="list-group">{categories.map((c) => <div key={c.id} className="list-group-item d-flex justify-content-between align-items-center"><div><strong>{c.name}</strong><div className="small text-secondary">{c.description || "No description"} · {c._count?.items ?? 0} items</div></div><div className="btn-group"><button className="btn btn-sm btn-outline-primary" onClick={() => showCategoryManager(c)}><Edit3 size={15}/></button><button className="btn btn-sm btn-outline-danger" disabled={Number(c._count?.items || 0) > 0} onClick={() => deleteCategory(c)}><Trash2 size={15}/></button></div></div>)}</div></Modal>}
 
-        setSuccess(
-          "Category created successfully.",
-        );
-      }
+    {stockItem && <Modal title={`${stockMode === "add" ? "Add" : "Remove"} stock — ${stockItem.name}`} onClose={() => setStockItem(null)}><form onSubmit={submitAdjustment}><p className="alert alert-light border">Branch: <strong>{branchName(stockItem.branchId)}</strong> · Available: <strong>{Number(stockItem.currentStock)} {stockItem.unit}</strong></p><div className="row g-3"><Field label="Quantity" type="number" min="0.01" step="0.01" required value={stockForm.quantity} onChange={(v) => updateStockForm("quantity", v)}/>{stockItem.requiresBatch && <Field label="Batch"><select className="form-select" value={stockForm.batchId} required onChange={(e) => updateStockForm("batchId", e.target.value)}><option value="">Select batch</option>{stockBatches.map((b) => <option key={b.id} value={b.id}>{b.batchNumber} · {Number(b.quantityAvailable)} available · Expires: {dateLabel(b.expiryDate)}</option>)}</select></Field>}<div className="col-12"><label className="form-label">Reason (optional)</label><textarea className="form-control" rows={2} value={stockForm.reason} onChange={(e) => updateStockForm("reason", e.target.value)}/></div></div><Actions busy={saving} onCancel={() => setStockItem(null)} label="Confirm adjustment"/></form></Modal>}
 
-      resetCategoryForm();
-      await loadCategories();
-    } catch (requestError) {
-      setError(
-        requestError.message ||
-          "Unable to save category.",
-      );
-    } finally {
-      setSaving(false);
-    }
+    {batchItem && <Modal title={`Add batch — ${batchItem.name}`} onClose={() => setBatchItem(null)}><form onSubmit={submitBatch}><p className="small text-secondary">Branch: {branchName(batchItem.branchId)}</p><div className="row g-3"><Field label="Batch number" value={batchForm.batchNumber} onChange={(v) => updateBatchForm("batchNumber", v)} required/><Field label="Quantity" type="number" min="0.01" step="0.01" value={batchForm.quantity} onChange={(v) => updateBatchForm("quantity", v)} required/><Field label="Cost price" type="number" min="0" step="0.01" value={batchForm.costPrice} onChange={(v) => updateBatchForm("costPrice", v)}/><Field label="Manufacture date (optional)" type="date" value={batchForm.manufactureDate} onChange={(v) => updateBatchForm("manufactureDate", v)}/><Field label="Expiry date (optional)" type="date" value={batchForm.expiryDate} onChange={(v) => updateBatchForm("expiryDate", v)} help="Different batches can have different expiry dates."/><div className="col-12"><label className="form-label">Reason (optional)</label><textarea className="form-control" rows={2} value={batchForm.reason} onChange={(e) => updateBatchForm("reason", e.target.value)}/></div></div><Actions busy={saving} onCancel={() => setBatchItem(null)} label="Create batch and add stock"/></form></Modal>}
+
+    {details && <Modal title="Inventory item details" size="modal-xl" onClose={() => setDetails(null)}>{detailsLoading ? <p>Loading item details...</p> : <><div className="d-flex justify-content-between gap-3 mb-3"><div><h4 className="fw-bold">{details.name}</h4><span className="text-secondary">{titleCase(details.type)} · {details.branch?.name || branchName(details.branchId)}</span></div><button className="btn btn-outline-primary" onClick={() => { setDetails(null); showEdit(details); }}>Edit item</button></div><div className="row g-3 mb-3">{[["Stock", `${Number(details.currentStock)} ${details.unit}`], ["Reorder level", Number(details.reorderLevel)], ["Purchase price", money(details.purchasePrice)], ["Selling price", money(details.sellingPrice)], ["Expiry date", dateLabel(details.expiryDate)], ["SKU", details.sku || "Not set"], ["Barcode", details.barcode || "Not set"], ["Branch", details.branch?.name || branchName(details.branchId)]].map(([label, value]) => <div className="col-sm-6 col-lg-3" key={label}><div className="rounded-3 border p-3 h-100"><small className="text-secondary">{label}</small><div className="fw-semibold">{value}</div></div></div>)}</div><h6 className="fw-bold">Batches</h6>{details.batches?.length ? <div className="table-responsive"><table className="table table-sm"><thead><tr><th>Batch</th><th>Available</th><th>Expiry</th><th>Cost</th></tr></thead><tbody>{details.batches.map((b) => <tr key={b.id}><td>{b.batchNumber}</td><td>{Number(b.quantityAvailable)}</td><td>{dateLabel(b.expiryDate)}</td><td>{money(b.costPrice)}</td></tr>)}</tbody></table></div> : <p className="text-secondary small">No batches recorded.</p>}</>}</Modal>}
+  </div>;
+}
+
+function ExpiryText({ date }) {
+  if (!date) return <small className="text-secondary"><CalendarDays size={13} className="me-1"/>Not set</small>;
+  const value = dateInput(date);
+  const localISODate = (d) => {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Kathmandu", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(d);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
   };
-
-  const removeCategory = async (
-    category,
-  ) => {
-    const confirmed = window.confirm(
-      `Delete category "${category.name}"?`,
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      setError("");
-      setSuccess("");
-
-      await inventoryService.deleteCategory(
-        category.id,
-      );
-
-      setSuccess(
-        "Category deleted successfully.",
-      );
-
-      if (
-        filters.categoryId === category.id
-      ) {
-        setFilters((previous) => ({
-          ...previous,
-          categoryId: "",
-        }));
-      }
-
-      await loadCategories();
-    } catch (requestError) {
-      setError(
-        requestError.message ||
-          "Unable to delete category.",
-      );
-    }
-  };
-
-  return (
-    <div className="inventory-page container-fluid py-4">
-      <section className="inventory-hero rounded-4 p-4 p-xl-5 mb-4">
-        <div className="row align-items-center g-4">
-          <div className="col-xl-7">
-            <span className="badge rounded-pill bg-primary-subtle text-primary mb-3 px-3 py-2">
-              <Boxes size={15} className="me-2" />
-              Clinic inventory workspace
-            </span>
-
-            <h2 className="fw-bold mb-2">
-              Inventory management
-            </h2>
-
-            <p className="text-secondary mb-4">
-              Manage medicines, vaccines,
-              consumables, categories, batches,
-              stock movement, pricing and reorder
-              levels from one page.
-            </p>
-
-            <div className="d-flex flex-wrap gap-2">
-              <button
-                type="button"
-                className="btn btn-primary d-flex align-items-center gap-2"
-                onClick={openCreateItem}
-              >
-                <Plus size={18} />
-                Add inventory item
-              </button>
-
-              <button
-                type="button"
-                className="btn btn-light border d-flex align-items-center gap-2"
-                onClick={() => {
-                  resetCategoryForm();
-                  setCategoryManagerOpen(true);
-                }}
-              >
-                <FolderCog size={18} />
-                Manage categories
-              </button>
-
-              <button
-                type="button"
-                className="btn btn-light border d-flex align-items-center gap-2"
-                onClick={() =>
-                  inventoryService
-                    .exportCsv()
-                    .catch((requestError) =>
-                      setError(
-                        requestError.message,
-                      ),
-                    )
-                }
-              >
-                <Download size={18} />
-                Export CSV
-              </button>
-            </div>
-          </div>
-
-          <div className="col-xl-5">
-            <div className="row g-3">
-              <SummaryCard
-                label="Total items"
-                value={stats?.totalItems ?? 0}
-                icon={Package}
-              />
-
-              <SummaryCard
-                label="Low stock"
-                value={stats?.lowStockItems ?? 0}
-                icon={TrendingDown}
-              />
-
-              <SummaryCard
-                label="Out of stock"
-                value={
-                  stats?.outOfStockItems ?? 0
-                }
-                icon={AlertTriangle}
-              />
-
-              <SummaryCard
-                label="Cost value"
-                value={money(
-                  stats?.stockValue?.cost,
-                )}
-                icon={CheckCircle2}
-              />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {error && (
-        <Message
-          type="danger"
-          text={error}
-          onClose={() => setError("")}
-        />
-      )}
-
-      {success && (
-        <Message
-          type="success"
-          text={success}
-          onClose={() => setSuccess("")}
-        />
-      )}
-
-      <div className="card border-0 shadow-sm rounded-4 mb-4">
-        <div className="card-body p-4">
-          <div className="row g-3">
-            <div className="col-xl-4">
-              <label className="form-label small fw-semibold">
-                Search inventory
-              </label>
-
-              <div className="input-group">
-                <span className="input-group-text bg-white border-end-0">
-                  <Search size={17} />
-                </span>
-
-                <input
-                  type="search"
-                  className="form-control border-start-0"
-                  placeholder="Name, generic name, SKU or barcode"
-                  value={filters.search}
-                  onChange={(event) =>
-                    setFilters((previous) => ({
-                      ...previous,
-                      search:
-                        event.target.value,
-                    }))
-                  }
-                />
-              </div>
-            </div>
-
-            <FilterSelect
-              label="Category"
-              value={filters.categoryId}
-              onChange={(value) =>
-                setFilters((previous) => ({
-                  ...previous,
-                  categoryId: value,
-                }))
-              }
-            >
-              <option value="">
-                All categories
-              </option>
-
-              {categories.map((category) => (
-                <option
-                  key={category.id}
-                  value={category.id}
-                >
-                  {category.name}
-                </option>
-              ))}
-            </FilterSelect>
-
-            <FilterSelect
-              label="Item type"
-              value={filters.type}
-              onChange={(value) =>
-                setFilters((previous) => ({
-                  ...previous,
-                  type: value,
-                }))
-              }
-            >
-              <option value="">
-                All types
-              </option>
-
-              {ITEM_TYPES.map((type) => (
-                <option
-                  key={type}
-                  value={type}
-                >
-                  {displayType(type)}
-                </option>
-              ))}
-            </FilterSelect>
-
-            <FilterSelect
-              label="Stock status"
-              value={filters.stockStatus}
-              onChange={(value) =>
-                setFilters((previous) => ({
-                  ...previous,
-                  stockStatus: value,
-                }))
-              }
-            >
-              <option value="">
-                All stock levels
-              </option>
-              <option value="low-stock">
-                Low stock
-              </option>
-              <option value="out-of-stock">
-                Out of stock
-              </option>
-            </FilterSelect>
-
-            <FilterSelect
-              label="Activity"
-              value={filters.isActive}
-              onChange={(value) =>
-                setFilters((previous) => ({
-                  ...previous,
-                  isActive: value,
-                }))
-              }
-            >
-              <option value="">
-                All items
-              </option>
-              <option value="true">
-                Active
-              </option>
-              <option value="false">
-                Inactive
-              </option>
-            </FilterSelect>
-          </div>
-
-          <div className="d-flex justify-content-end mt-3">
-            <button
-              type="button"
-              className="btn btn-sm btn-link text-decoration-none"
-              onClick={() =>
-                setFilters({
-                  search: "",
-                  categoryId: "",
-                  type: "",
-                  stockStatus: "",
-                  isActive: "true",
-                })
-              }
-            >
-              Reset filters
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {attentionItems.length > 0 && (
-        <div className="alert alert-warning border-0 shadow-sm rounded-4">
-          <div className="d-flex gap-3">
-            <AlertTriangle
-              size={22}
-              className="flex-shrink-0"
-            />
-
-            <div>
-              <div className="fw-semibold">
-                Stock attention required
-              </div>
-
-              <small>
-                {attentionItems
-                  .map((item) => item.name)
-                  .join(", ")}
-              </small>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="card border-0 shadow-sm rounded-4 overflow-hidden">
-        <div className="card-header bg-white border-0 p-4 d-flex flex-column flex-md-row justify-content-between gap-3">
-          <div>
-            <h5 className="fw-bold mb-1">
-              Inventory records
-            </h5>
-
-            <small className="text-secondary">
-              {pagination.total} item
-              {pagination.total === 1
-                ? ""
-                : "s"}{" "}
-              found
-            </small>
-          </div>
-
-          <button
-            type="button"
-            className="btn btn-light border d-flex align-items-center gap-2 align-self-start"
-            onClick={() =>
-              reloadPage(pagination.page)
-            }
-            disabled={loading}
-          >
-            <RefreshCw size={16} />
-            Refresh
-          </button>
-        </div>
-
-        <div className="table-responsive">
-          <table className="table align-middle mb-0 inventory-table">
-            <thead className="table-light">
-              <tr>
-                <th className="ps-4">Item</th>
-                <th>Category</th>
-                <th>Stock</th>
-                <th>Pricing</th>
-                <th>Identifiers</th>
-                <th>Status</th>
-                <th className="text-end pe-4">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td
-                    colSpan="7"
-                    className="text-center py-5"
-                  >
-                    <div className="spinner-border text-primary" />
-                  </td>
-                </tr>
-              ) : items.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan="7"
-                    className="text-center py-5"
-                  >
-                    <Package
-                      size={42}
-                      className="text-secondary mb-3"
-                    />
-
-                    <h6 className="fw-bold">
-                      No inventory items found
-                    </h6>
-
-                    <p className="text-secondary mb-3">
-                      Add your first inventory
-                      item or change the filters.
-                    </p>
-
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      onClick={openCreateItem}
-                    >
-                      Add inventory item
-                    </button>
-                  </td>
-                </tr>
-              ) : (
-                items.map((item) => {
-                  const status =
-                    getStockStatus(item);
-
-                  return (
-                    <tr key={item.id}>
-                      <td className="ps-4">
-                        <button
-                          type="button"
-                          className="btn btn-link text-start text-decoration-none p-0"
-                          onClick={() =>
-                            openDetails(item)
-                          }
-                        >
-                          <div className="fw-semibold text-dark">
-                            {item.name}
-                          </div>
-
-                          <small className="text-secondary">
-                            {item.genericName ||
-                              displayType(
-                                item.type,
-                              )}
-                          </small>
-                        </button>
-                      </td>
-
-                      <td>
-                        <div>
-                          {item.category
-                            ?.name ||
-                            "Uncategorised"}
-                        </div>
-
-                        <small className="text-secondary">
-                          {displayType(
-                            item.type,
-                          )}
-                        </small>
-                      </td>
-
-                      <td>
-                        <div className="fw-semibold">
-                          {Number(
-                            item.currentStock,
-                          )}{" "}
-                          {item.unit}
-                        </div>
-
-                        <small className="text-secondary">
-                          Reorder level:{" "}
-                          {Number(
-                            item.reorderLevel,
-                          )}
-                        </small>
-                      </td>
-
-                      <td>
-                        <div>
-                          {money(
-                            item.sellingPrice,
-                          )}
-                        </div>
-
-                        <small className="text-secondary">
-                          Cost:{" "}
-                          {money(
-                            item.purchasePrice,
-                          )}
-                        </small>
-                      </td>
-
-                      <td>
-                        <div className="small">
-                          SKU:{" "}
-                          <span className="text-secondary">
-                            {item.sku ||
-                              "Optional / not set"}
-                          </span>
-                        </div>
-
-                        <div className="small">
-                          Barcode:{" "}
-                          <span className="text-secondary">
-                            {item.barcode ||
-                              "Optional / not set"}
-                          </span>
-                        </div>
-                      </td>
-
-                      <td>
-                        <span
-                          className={`badge ${getStatusClass(
-                            status,
-                          )}`}
-                        >
-                          {status}
-                        </span>
-
-                        {item.requiresBatch && (
-                          <div className="small text-primary mt-1">
-                            Batch tracked
-                          </div>
-                        )}
-                      </td>
-
-                      <td className="text-end pe-4">
-                        <div className="dropdown">
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-light border dropdown-toggle"
-                            data-bs-toggle="dropdown"
-                          >
-                            Actions
-                          </button>
-
-                          <ul className="dropdown-menu dropdown-menu-end shadow-sm">
-                            <li>
-                              <button
-                                className="dropdown-item"
-                                onClick={() =>
-                                  openDetails(
-                                    item,
-                                  )
-                                }
-                              >
-                                View details
-                              </button>
-                            </li>
-
-                            <li>
-                              <button
-                                className="dropdown-item"
-                                onClick={() =>
-                                  openEditItem(
-                                    item,
-                                  )
-                                }
-                              >
-                                Edit item
-                              </button>
-                            </li>
-
-                            {item.requiresBatch && (
-                              <li>
-                                <button
-                                  className="dropdown-item"
-                                  onClick={() =>
-                                    openBatchForm(
-                                      item,
-                                    )
-                                  }
-                                >
-                                  Add new batch
-                                </button>
-                              </li>
-                            )}
-
-                            <li>
-                              <button
-                                className="dropdown-item"
-                                onClick={() =>
-                                  openStockAdjustment(
-                                    item,
-                                    "add",
-                                  )
-                                }
-                              >
-                                Add stock
-                              </button>
-                            </li>
-
-                            <li>
-                              <button
-                                className="dropdown-item"
-                                onClick={() =>
-                                  openStockAdjustment(
-                                    item,
-                                    "remove",
-                                  )
-                                }
-                              >
-                                Remove stock
-                              </button>
-                            </li>
-
-                            <li>
-                              <hr className="dropdown-divider" />
-                            </li>
-
-                            <li>
-                              <button
-                                className="dropdown-item text-danger"
-                                onClick={() =>
-                                  removeItem(item)
-                                }
-                              >
-                                Delete item
-                              </button>
-                            </li>
-                          </ul>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="card-footer bg-white border-0 p-4 d-flex justify-content-between align-items-center">
-          <small className="text-secondary">
-            Page {pagination.page} of{" "}
-            {pagination.totalPages || 1}
-          </small>
-
-          <div className="btn-group">
-            <button
-              type="button"
-              className="btn btn-sm btn-outline-secondary"
-              disabled={
-                loading ||
-                pagination.page <= 1
-              }
-              onClick={() =>
-                reloadPage(
-                  pagination.page - 1,
-                )
-              }
-            >
-              Previous
-            </button>
-
-            <button
-              type="button"
-              className="btn btn-sm btn-outline-secondary"
-              disabled={
-                loading ||
-                pagination.page >=
-                  pagination.totalPages
-              }
-              onClick={() =>
-                reloadPage(
-                  pagination.page + 1,
-                )
-              }
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {itemModal && (
-        <Modal
-          title={
-            editingItem
-              ? "Edit inventory item"
-              : "Add inventory item"
-          }
-          onClose={() =>
-            setItemModal(false)
-          }
-          size="modal-xl"
-        >
-          <form onSubmit={submitItem}>
-            <SectionTitle title="Basic information" />
-
-            <div className="row g-3">
-              <InputField
-                label="Item name"
-                value={itemForm.name}
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      name: value,
-                    }),
-                  )
-                }
-                required
-              />
-
-              <InputField
-                label="Generic name"
-                value={itemForm.genericName}
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      genericName: value,
-                    }),
-                  )
-                }
-              />
-
-              <SelectField
-                label="Item type"
-                value={itemForm.type}
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      type: value,
-                    }),
-                  )
-                }
-              >
-                {ITEM_TYPES.map((type) => (
-                  <option
-                    key={type}
-                    value={type}
-                  >
-                    {displayType(type)}
-                  </option>
-                ))}
-              </SelectField>
-
-              <div className="col-md-6">
-                <div className="d-flex justify-content-between align-items-center">
-                  <label className="form-label">
-                    Category
-                  </label>
-
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-link text-decoration-none p-0"
-                    onClick={() => {
-                      resetCategoryForm();
-                      setCategoryManagerOpen(
-                        true,
-                      );
-                    }}
-                  >
-                    Manage
-                  </button>
-                </div>
-
-                <select
-                  className="form-select"
-                  value={
-                    itemForm.categoryId
-                  }
-                  onChange={(event) =>
-                    setItemForm(
-                      (previous) => ({
-                        ...previous,
-                        categoryId:
-                          event.target
-                            .value,
-                      }),
-                    )
-                  }
-                >
-                  <option value="">
-                    No category
-                  </option>
-
-                  {categories.map(
-                    (category) => (
-                      <option
-                        key={category.id}
-                        value={category.id}
-                      >
-                        {category.name}
-                      </option>
-                    ),
-                  )}
-                </select>
-              </div>
-
-              <SelectField
-                label="Unit"
-                value={itemForm.unit}
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      unit: value,
-                    }),
-                  )
-                }
-              >
-                {UNITS.map((unit) => (
-                  <option
-                    key={unit}
-                    value={unit}
-                  >
-                    {unit}
-                  </option>
-                ))}
-              </SelectField>
-            </div>
-
-            <SectionTitle
-              title="Stock and pricing"
-              className="mt-4"
-            />
-
-            <div className="row g-3">
-              {!editingItem && (
-                <InputField
-                  label={
-                    itemForm.requiresBatch
-                      ? "Opening stock for first batch"
-                      : "Opening stock"
-                  }
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={
-                    itemForm.openingStock
-                  }
-                  onChange={(value) =>
-                    setItemForm(
-                      (previous) => ({
-                        ...previous,
-                        openingStock:
-                          value,
-                      }),
-                    )
-                  }
-                  help={
-                    itemForm.requiresBatch
-                      ? "After creating the item, you will be asked for its first batch number."
-                      : ""
-                  }
-                />
-              )}
-
-              <InputField
-                label="Reorder level"
-                type="number"
-                min="0"
-                step="0.01"
-                value={
-                  itemForm.reorderLevel
-                }
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      reorderLevel:
-                        value,
-                    }),
-                  )
-                }
-              />
-
-              <InputField
-                label="Purchase price"
-                type="number"
-                min="0"
-                step="0.01"
-                value={
-                  itemForm.purchasePrice
-                }
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      purchasePrice:
-                        value,
-                    }),
-                  )
-                }
-              />
-
-              <InputField
-                label="Selling price"
-                type="number"
-                min="0"
-                step="0.01"
-                value={
-                  itemForm.sellingPrice
-                }
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      sellingPrice:
-                        value,
-                    }),
-                  )
-                }
-              />
-
-              <InputField
-                label="Tax percent"
-                type="number"
-                min="0"
-                step="0.01"
-                value={itemForm.taxPercent}
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      taxPercent: value,
-                    }),
-                  )
-                }
-              />
-            </div>
-
-            <SectionTitle
-              title="Optional identifiers"
-              className="mt-4"
-            />
-
-            <div className="alert alert-light border small">
-              SKU and barcode are optional.
-              Leave either field empty when your
-              clinic does not use it.
-            </div>
-
-            <div className="row g-3">
-              <InputField
-                label="SKU (optional)"
-                value={itemForm.sku}
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      sku: value,
-                    }),
-                  )
-                }
-                icon={Package}
-              />
-
-              <InputField
-                label="Barcode (optional)"
-                value={itemForm.barcode}
-                onChange={(value) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      barcode: value,
-                    }),
-                  )
-                }
-                icon={Barcode}
-              />
-            </div>
-
-            <div className="d-flex flex-wrap gap-4 mt-4">
-              <CheckField
-                label="Requires batch tracking"
-                checked={
-                  itemForm.requiresBatch
-                }
-                onChange={(checked) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      requiresBatch:
-                        checked,
-                    }),
-                  )
-                }
-              />
-
-              <CheckField
-                label="Active item"
-                checked={itemForm.isActive}
-                onChange={(checked) =>
-                  setItemForm(
-                    (previous) => ({
-                      ...previous,
-                      isActive: checked,
-                    }),
-                  )
-                }
-              />
-            </div>
-
-            <ModalActions
-              saving={saving}
-              submitLabel={
-                editingItem
-                  ? "Save changes"
-                  : "Create item"
-              }
-              onCancel={() =>
-                setItemModal(false)
-              }
-            />
-          </form>
-        </Modal>
-      )}
-
-      {categoryManagerOpen && (
-        <Modal
-          title="Inventory categories"
-          onClose={() => {
-            setCategoryManagerOpen(false);
-            resetCategoryForm();
-          }}
-          size="modal-lg"
-        >
-          <form
-            onSubmit={submitCategory}
-            className="card bg-light border-0 mb-4"
-          >
-            <div className="card-body">
-              <h6 className="fw-bold">
-                {editingCategory
-                  ? "Edit category"
-                  : "Create category"}
-              </h6>
-
-              <div className="row g-3">
-                <InputField
-                  label="Category name"
-                  value={
-                    categoryForm.name
-                  }
-                  onChange={(value) =>
-                    setCategoryForm(
-                      (previous) => ({
-                        ...previous,
-                        name: value,
-                      }),
-                    )
-                  }
-                  required
-                />
-
-                <div className="col-12">
-                  <label className="form-label">
-                    Description
-                  </label>
-
-                  <textarea
-                    className="form-control"
-                    rows="2"
-                    value={
-                      categoryForm.description
-                    }
-                    onChange={(event) =>
-                      setCategoryForm(
-                        (previous) => ({
-                          ...previous,
-                          description:
-                            event.target
-                              .value,
-                        }),
-                      )
-                    }
-                  />
-                </div>
-              </div>
-
-              <div className="d-flex justify-content-end gap-2 mt-3">
-                {editingCategory && (
-                  <button
-                    type="button"
-                    className="btn btn-light border"
-                    onClick={
-                      resetCategoryForm
-                    }
-                  >
-                    Cancel edit
-                  </button>
-                )}
-
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={saving}
-                >
-                  {saving
-                    ? "Saving..."
-                    : editingCategory
-                      ? "Update category"
-                      : "Add category"}
-                </button>
-              </div>
-            </div>
-          </form>
-
-          <div className="list-group">
-            {categories.length === 0 ? (
-              <div className="text-center text-secondary py-4">
-                No categories created yet.
-              </div>
-            ) : (
-              categories.map((category) => (
-                <div
-                  key={category.id}
-                  className="list-group-item d-flex justify-content-between align-items-center gap-3 py-3"
-                >
-                  <div>
-                    <div className="fw-semibold">
-                      {category.name}
-                    </div>
-
-                    <small className="text-secondary">
-                      {category.description ||
-                        "No description"}{" "}
-                      ·{" "}
-                      {category._count
-                        ?.items || 0}{" "}
-                      item(s)
-                    </small>
-                  </div>
-
-                  <div className="btn-group">
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-outline-primary"
-                      onClick={() =>
-                        editCategory(
-                          category,
-                        )
-                      }
-                    >
-                      <Edit3 size={15} />
-                    </button>
-
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-outline-danger"
-                      disabled={
-                        Number(
-                          category._count
-                            ?.items || 0,
-                        ) > 0
-                      }
-                      title={
-                        Number(
-                          category._count
-                            ?.items || 0,
-                        ) > 0
-                          ? "Move items out of this category before deleting it"
-                          : "Delete category"
-                      }
-                      onClick={() =>
-                        removeCategory(
-                          category,
-                        )
-                      }
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {stockModal && (
-        <Modal
-          title={`${
-            stockModal.mode === "add"
-              ? "Add"
-              : "Remove"
-          } stock — ${stockModal.item.name}`}
-          onClose={() =>
-            setStockModal(null)
-          }
-          size="modal-lg"
-        >
-          <form
-            onSubmit={
-              submitStockAdjustment
-            }
-          >
-            <div className="alert alert-light border">
-              Current stock:{" "}
-              <strong>
-                {Number(
-                  stockModal.item
-                    .currentStock,
-                )}{" "}
-                {stockModal.item.unit}
-              </strong>
-            </div>
-
-            <div className="row g-3">
-              <InputField
-                label="Quantity"
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={
-                  stockForm.quantity
-                }
-                onChange={(value) =>
-                  setStockForm(
-                    (previous) => ({
-                      ...previous,
-                      quantity: value,
-                    }),
-                  )
-                }
-                required
-              />
-
-              {stockModal.item
-                .requiresBatch && (
-                <div className="col-md-6">
-                  <label className="form-label">
-                    Batch
-                  </label>
-
-                  <select
-                    className="form-select"
-                    value={
-                      stockForm.batchId
-                    }
-                    onChange={(event) =>
-                      setStockForm(
-                        (previous) => ({
-                          ...previous,
-                          batchId:
-                            event.target
-                              .value,
-                        }),
-                      )
-                    }
-                    required
-                  >
-                    <option value="">
-                      Select batch
-                    </option>
-
-                    {stockModal.batches.map(
-                      (batch) => (
-                        <option
-                          key={batch.id}
-                          value={batch.id}
-                        >
-                          {
-                            batch.batchNumber
-                          }{" "}
-                          —{" "}
-                          {Number(
-                            batch.quantityAvailable,
-                          )}{" "}
-                          available
-                        </option>
-                      ),
-                    )}
-                  </select>
-
-                  {stockModal.batches
-                    .length === 0 && (
-                    <div className="mt-2">
-                      <small className="text-danger d-block mb-2">
-                        No batch is available.
-                      </small>
-
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline-primary"
-                        onClick={() => {
-                          setStockModal(
-                            null,
-                          );
-                          openBatchForm(
-                            stockModal.item,
-                          );
-                        }}
-                      >
-                        Create a batch
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="col-12">
-                <label className="form-label">
-                  Reason
-                </label>
-
-                <textarea
-                  className="form-control"
-                  rows="3"
-                  value={stockForm.reason}
-                  onChange={(event) =>
-                    setStockForm(
-                      (previous) => ({
-                        ...previous,
-                        reason:
-                          event.target
-                            .value,
-                      }),
-                    )
-                  }
-                  placeholder="Optional note for the stock movement"
-                />
-              </div>
-            </div>
-
-            <ModalActions
-              saving={saving}
-              submitLabel="Confirm adjustment"
-              onCancel={() =>
-                setStockModal(null)
-              }
-            />
-          </form>
-        </Modal>
-      )}
-
-      {batchModal && (
-        <Modal
-          title={`Add batch — ${batchModal.name}`}
-          onClose={() =>
-            setBatchModal(null)
-          }
-          size="modal-lg"
-        >
-          <form onSubmit={submitBatch}>
-            <div className="row g-3">
-              <InputField
-                label="Batch number"
-                value={
-                  batchForm.batchNumber
-                }
-                onChange={(value) =>
-                  setBatchForm(
-                    (previous) => ({
-                      ...previous,
-                      batchNumber: value,
-                    }),
-                  )
-                }
-                required
-              />
-
-              <InputField
-                label="Quantity received"
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={batchForm.quantity}
-                onChange={(value) =>
-                  setBatchForm(
-                    (previous) => ({
-                      ...previous,
-                      quantity: value,
-                    }),
-                  )
-                }
-                required
-              />
-
-              <InputField
-                label="Cost price"
-                type="number"
-                min="0"
-                step="0.01"
-                value={
-                  batchForm.costPrice
-                }
-                onChange={(value) =>
-                  setBatchForm(
-                    (previous) => ({
-                      ...previous,
-                      costPrice: value,
-                    }),
-                  )
-                }
-              />
-
-              <InputField
-                label="Manufacture date"
-                type="date"
-                value={
-                  batchForm.manufactureDate
-                }
-                onChange={(value) =>
-                  setBatchForm(
-                    (previous) => ({
-                      ...previous,
-                      manufactureDate:
-                        value,
-                    }),
-                  )
-                }
-              />
-
-              <InputField
-                label="Expiry date"
-                type="date"
-                value={
-                  batchForm.expiryDate
-                }
-                onChange={(value) =>
-                  setBatchForm(
-                    (previous) => ({
-                      ...previous,
-                      expiryDate: value,
-                    }),
-                  )
-                }
-              />
-
-              <div className="col-12">
-                <label className="form-label">
-                  Reason
-                </label>
-
-                <textarea
-                  className="form-control"
-                  rows="2"
-                  value={batchForm.reason}
-                  onChange={(event) =>
-                    setBatchForm(
-                      (previous) => ({
-                        ...previous,
-                        reason:
-                          event.target
-                            .value,
-                      }),
-                    )
-                  }
-                />
-              </div>
-            </div>
-
-            <ModalActions
-              saving={saving}
-              submitLabel="Create batch and add stock"
-              onCancel={() =>
-                setBatchModal(null)
-              }
-            />
-          </form>
-        </Modal>
-      )}
-
-      {details && (
-        <Modal
-          title="Inventory item details"
-          onClose={() => setDetails(null)}
-          size="modal-xl"
-        >
-          {detailsLoading ? (
-            <div className="text-center py-5">
-              <div className="spinner-border text-primary" />
-            </div>
-          ) : (
-            <>
-              <div className="d-flex flex-column flex-md-row justify-content-between gap-3 mb-4">
-                <div>
-                  <h4 className="fw-bold mb-1">
-                    {details.name}
-                  </h4>
-
-                  <div className="text-secondary">
-                    {details.genericName ||
-                      displayType(
-                        details.type,
-                      )}
-                  </div>
-                </div>
-
-                <div className="d-flex gap-2">
-                  {details.requiresBatch && (
-                    <button
-                      type="button"
-                      className="btn btn-outline-primary"
-                      onClick={() => {
-                        setDetails(null);
-                        openBatchForm(
-                          details,
-                        );
-                      }}
-                    >
-                      Add batch
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => {
-                      setDetails(null);
-                      openEditItem(details);
-                    }}
-                  >
-                    Edit item
-                  </button>
-                </div>
-              </div>
-
-              <div className="row g-3 mb-4">
-                <DetailCard
-                  label="Current stock"
-                  value={`${Number(
-                    details.currentStock,
-                  )} ${details.unit}`}
-                />
-
-                <DetailCard
-                  label="Reorder level"
-                  value={Number(
-                    details.reorderLevel,
-                  )}
-                />
-
-                <DetailCard
-                  label="Purchase price"
-                  value={money(
-                    details.purchasePrice,
-                  )}
-                />
-
-                <DetailCard
-                  label="Selling price"
-                  value={money(
-                    details.sellingPrice,
-                  )}
-                />
-              </div>
-
-              <div className="row g-4">
-                <div className="col-lg-5">
-                  <h6 className="fw-bold">
-                    Item information
-                  </h6>
-
-                  <dl className="row small">
-                    <dt className="col-5">
-                      Category
-                    </dt>
-                    <dd className="col-7">
-                      {details.category
-                        ?.name ||
-                        "Uncategorised"}
-                    </dd>
-
-                    <dt className="col-5">
-                      Type
-                    </dt>
-                    <dd className="col-7">
-                      {displayType(
-                        details.type,
-                      )}
-                    </dd>
-
-                    <dt className="col-5">
-                      SKU
-                    </dt>
-                    <dd className="col-7">
-                      {details.sku ||
-                        "Not set"}
-                    </dd>
-
-                    <dt className="col-5">
-                      Barcode
-                    </dt>
-                    <dd className="col-7">
-                      {details.barcode ||
-                        "Not set"}
-                    </dd>
-
-                    <dt className="col-5">
-                      Batch tracking
-                    </dt>
-                    <dd className="col-7">
-                      {details.requiresBatch
-                        ? "Required"
-                        : "Not required"}
-                    </dd>
-
-                    <dt className="col-5">
-                      Activity
-                    </dt>
-                    <dd className="col-7">
-                      {details.isActive
-                        ? "Active"
-                        : "Inactive"}
-                    </dd>
-                  </dl>
-                </div>
-
-                <div className="col-lg-7">
-                  <h6 className="fw-bold">
-                    Batches
-                  </h6>
-
-                  {details.batches?.length ? (
-                    <div className="table-responsive">
-                      <table className="table table-sm align-middle">
-                        <thead>
-                          <tr>
-                            <th>Batch</th>
-                            <th>Available</th>
-                            <th>Expiry</th>
-                            <th>Cost</th>
-                          </tr>
-                        </thead>
-
-                        <tbody>
-                          {details.batches.map(
-                            (batch) => (
-                              <tr
-                                key={batch.id}
-                              >
-                                <td>
-                                  {
-                                    batch.batchNumber
-                                  }
-                                </td>
-                                <td>
-                                  {Number(
-                                    batch.quantityAvailable,
-                                  )}
-                                </td>
-                                <td>
-                                  {batch.expiryDate
-                                    ? new Date(
-                                        batch.expiryDate,
-                                      ).toLocaleDateString(
-                                        "en-GB",
-                                      )
-                                    : "Not set"}
-                                </td>
-                                <td>
-                                  {money(
-                                    batch.costPrice,
-                                  )}
-                                </td>
-                              </tr>
-                            ),
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <div className="text-secondary small">
-                      No batches available.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-        </Modal>
-      )}
-
-      <style>{`
-        .inventory-page {
-          min-height: 100%;
-        }
-
-        .inventory-hero {
-          background:
-            linear-gradient(
-              135deg,
-              rgba(var(--bs-primary-rgb), 0.12),
-              rgba(var(--bs-primary-rgb), 0.025)
-            ),
-            #fff;
-          border: 1px solid
-            rgba(var(--bs-primary-rgb), 0.12);
-        }
-
-        .inventory-table th {
-          white-space: nowrap;
-          font-size: 0.78rem;
-          text-transform: uppercase;
-          letter-spacing: 0.035rem;
-          color: var(--bs-secondary-color);
-        }
-
-        .inventory-table td {
-          padding-top: 1rem;
-          padding-bottom: 1rem;
-        }
-
-        .summary-card {
-          min-height: 118px;
-        }
-
-        .summary-card-icon {
-          width: 42px;
-          height: 42px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-      `}</style>
-    </div>
-  );
-}
-
-function SummaryCard({
-  label,
-  value,
-  icon: Icon,
-}) {
-  return (
-    <div className="col-sm-6">
-      <div className="summary-card card border-0 shadow-sm rounded-4 h-100">
-        <div className="card-body p-3 d-flex justify-content-between align-items-start gap-3">
-          <div>
-            <small className="text-secondary">
-              {label}
-            </small>
-
-            <h5 className="fw-bold mb-0 mt-2">
-              {value}
-            </h5>
-          </div>
-
-          <div className="summary-card-icon rounded-3 bg-primary-subtle text-primary">
-            <Icon size={20} />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Message({
-  type,
-  text,
-  onClose,
-}) {
-  return (
-    <div
-      className={`alert alert-${type} d-flex justify-content-between align-items-center border-0 shadow-sm`}
-    >
-      <span>{text}</span>
-
-      <button
-        type="button"
-        className="btn-close"
-        onClick={onClose}
-      />
-    </div>
-  );
-}
-
-function FilterSelect({
-  label,
-  value,
-  onChange,
-  children,
-}) {
-  return (
-    <div className="col-md-6 col-xl-2">
-      <label className="form-label small fw-semibold">
-        {label}
-      </label>
-
-      <select
-        className="form-select"
-        value={value}
-        onChange={(event) =>
-          onChange(event.target.value)
-        }
-      >
-        {children}
-      </select>
-    </div>
-  );
-}
-
-function SectionTitle({
-  title,
-  className = "",
-}) {
-  return (
-    <h6
-      className={`fw-bold border-bottom pb-2 mb-3 ${className}`}
-    >
-      {title}
-    </h6>
-  );
-}
-
-function InputField({
-  label,
-  value,
-  onChange,
-  type = "text",
-  min,
-  step,
-  required = false,
-  help = "",
-}) {
-  return (
-    <div className="col-md-6">
-      <label className="form-label">
-        {label}
-      </label>
-
-      <input
-        type={type}
-        className="form-control"
-        value={value}
-        min={min}
-        step={step}
-        required={required}
-        onChange={(event) =>
-          onChange(event.target.value)
-        }
-      />
-
-      {help && (
-        <small className="text-secondary">
-          {help}
-        </small>
-      )}
-    </div>
-  );
-}
-
-function SelectField({
-  label,
-  value,
-  onChange,
-  children,
-}) {
-  return (
-    <div className="col-md-6">
-      <label className="form-label">
-        {label}
-      </label>
-
-      <select
-        className="form-select"
-        value={value}
-        onChange={(event) =>
-          onChange(event.target.value)
-        }
-      >
-        {children}
-      </select>
-    </div>
-  );
-}
-
-function CheckField({
-  label,
-  checked,
-  onChange,
-}) {
-  return (
-    <label className="form-check">
-      <input
-        type="checkbox"
-        className="form-check-input"
-        checked={checked}
-        onChange={(event) =>
-          onChange(event.target.checked)
-        }
-      />
-
-      <span className="form-check-label">
-        {label}
-      </span>
-    </label>
-  );
-}
-
-function ModalActions({
-  saving,
-  submitLabel,
-  onCancel,
-}) {
-  return (
-    <div className="d-flex justify-content-end gap-2 mt-4">
-      <button
-        type="button"
-        className="btn btn-light border"
-        onClick={onCancel}
-      >
-        Cancel
-      </button>
-
-      <button
-        type="submit"
-        className="btn btn-primary"
-        disabled={saving}
-      >
-        {saving
-          ? "Saving..."
-          : submitLabel}
-      </button>
-    </div>
-  );
-}
-
-function DetailCard({
-  label,
-  value,
-}) {
-  return (
-    <div className="col-sm-6 col-xl-3">
-      <div className="border rounded-4 p-3 h-100">
-        <small className="text-secondary">
-          {label}
-        </small>
-
-        <div className="fw-bold mt-1">
-          {value}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Modal({
-  title,
-  onClose,
-  children,
-  size = "modal-lg",
-}) {
-  return (
-    <>
-      <div
-        className="modal fade show d-block"
-        tabIndex="-1"
-        role="dialog"
-      >
-        <div
-          className={`modal-dialog ${size} modal-dialog-centered modal-dialog-scrollable`}
-        >
-          <div className="modal-content border-0 shadow">
-            <div className="modal-header">
-              <h5 className="modal-title fw-bold">
-                {title}
-              </h5>
-
-              <button
-                type="button"
-                className="btn btn-light border-0"
-                onClick={onClose}
-                aria-label="Close"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="modal-body p-4">
-              {children}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="modal-backdrop fade show" />
-    </>
-  );
+  const today = localISODate(new Date());
+  const tomorrowMonth = localISODate(new Date(Date.now() + 30 * 86400000));
+  const status = value < today ? "text-danger" : value <= tomorrowMonth ? "text-warning" : "text-secondary";
+  return <small className={status}><CalendarDays size={13} className="me-1"/>{value}{value < today ? " · Expired" : ""}</small>;
 }

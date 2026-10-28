@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   AlertCircle,
@@ -28,7 +28,7 @@ import prescriptionService from "../../services/prescription.service";
 import "./PrescriptionForm.css";
 
 const CLINIC = {
-  name: "Pokhara Pet Hospital",
+  name: "Gandaki vet and pet",
   subtitle: "Veterinary Clinic & Pet Care Centre",
   address: "Pokhara, Kaski, Nepal",
   phone: "+977-9802859465",
@@ -127,7 +127,7 @@ const CAT_CBC_TEMPLATE = [
   { key: "mpv", test: "MPV", unit: "fL", range: "8–14" },
 ];
 
-// ─── Serum Biochemistry (Pokhara Pet Hospital reference) ───────────
+// ─── Serum Biochemistry (Gandaki vet and pet reference) ───────────
 const BIOCHEMISTRY_PANELS = [
   {
     id: "LFT",
@@ -291,6 +291,8 @@ function PrescriptionForm() {
   const { appointmentId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const wantsAutoPrint = new URLSearchParams(location.search).get("print") === "1";
+  const autoPrintedRef = useRef(false);
 
   const [activeTab, setActiveTab] = useState("general");
   const [appointment, setAppointment] = useState(null);
@@ -330,6 +332,9 @@ function PrescriptionForm() {
         setLoading(true);
         setError("");
         setSuccess("");
+        setAppointment(null);
+        setPrescriptionId(null);
+        setFormData(initialForm);
 
         console.log("📋 Loading appointment:", appointmentId);
 
@@ -405,11 +410,14 @@ function PrescriptionForm() {
           }
         } catch (prescriptionError) {
           // ✅ 404 is expected if no prescription exists yet - this is normal!
-          if (prescriptionError?.status === 404) {
+          if (prescriptionError?.status === 404 || prescriptionError?.response?.status === 404) {
             console.log(" No existing prescription found - opening new form");
             setPrescriptionId(null);
           } else {
             console.warn(" Could not load existing prescription:", prescriptionError?.message);
+            if (wantsAutoPrint) {
+              setError(prescriptionError?.message || "Unable to load the saved prescription for printing.");
+            }
           }
         }
       } catch (requestError) {
@@ -422,6 +430,36 @@ function PrescriptionForm() {
 
     loadPage();
   }, [appointmentId]);
+
+  // Reset the one-time print flag if the user opens a different appointment
+  // or navigates from editing to the print URL.
+  useEffect(() => {
+    autoPrintedRef.current = false;
+  }, [appointmentId, location.search]);
+
+  // The appointment and prescription come from the API, not navigation state.
+  // Never auto-print a draft or a prescription for a non-completed appointment.
+  useEffect(() => {
+    if (!wantsAutoPrint || loading || autoPrintedRef.current) return;
+
+    if (!appointment || appointment.status !== "COMPLETED") {
+      setError("Only completed appointments can have their prescriptions printed.");
+      return;
+    }
+
+    if (!prescriptionId) {
+      setError("No saved prescription was found. Save a prescription before printing.");
+      return;
+    }
+
+    // Wait for React to paint PrintablePrescription with the fetched record.
+    const timer = window.setTimeout(() => {
+      autoPrintedRef.current = true;
+      window.print();
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [wantsAutoPrint, loading, appointment, prescriptionId]);
 
   useEffect(() => {
     const species = appointment?.pet?.species?.name;
@@ -800,6 +838,14 @@ function PrescriptionForm() {
   }
 
   function handlePrint() {
+    if (appointment?.status !== "COMPLETED") {
+      setError("Complete the appointment before printing the prescription.");
+      return;
+    }
+    if (!prescriptionId) {
+      setError("Save the prescription before printing it.");
+      return;
+    }
     setError("");
     setTimeout(() => window.print(), 50);
   }
@@ -829,7 +875,17 @@ function PrescriptionForm() {
           </div>
         </div>
         <div className="d-flex gap-2 prescription-header-actions">
-          <button type="button" className="btn btn-light border d-flex align-items-center gap-2" onClick={handlePrint}>
+          <button
+            type="button"
+            className="btn btn-light border d-flex align-items-center gap-2"
+            onClick={handlePrint}
+            disabled={appointment?.status !== "COMPLETED" || !prescriptionId}
+            title={appointment?.status !== "COMPLETED"
+              ? "Available after completing the appointment"
+              : !prescriptionId
+                ? "Save a prescription first"
+                : "Print or save prescription as PDF"}
+          >
             <Printer size={17} /> Print / PDF
           </button>
           <button type="button" className="btn btn-primary d-flex align-items-center gap-2" onClick={handleSaveClick} disabled={saving}>

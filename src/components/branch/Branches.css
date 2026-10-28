@@ -1,0 +1,99 @@
+
+.branches-page {
+  min-height: 100vh;
+}
+
+.branch-card,
+.branch-stat-card,
+.branch-empty-card {
+  border: 1px solid #e9edf2;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.branch-card {
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.branch-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+}
+
+.branch-icon {
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: #e9f2ff;
+  color: #2563eb;
+}
+
+.branch-stat-icon {
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+}
+
+.branch-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1050;
+  padding: 16px;
+}
+
+.branch-modal {
+  width: 100%;
+  max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+  border-radius: 18px;
+  border: none;
+}
+
+.branch-modal .form-control {
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+
+.branch-modal .form-control:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.branch-spin {
+  animation: branch-rotate 1s linear infinite;
+}
+
+@keyframes branch-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 576px) {
+  .branch-modal {
+    max-height: 95vh;
+  }
+
+  .branch-modal .card-body {
+    padding: 20px !important;
+  }
+
+  .branches-page h3 {
+    font-size: 1.4rem;
+  }
+}

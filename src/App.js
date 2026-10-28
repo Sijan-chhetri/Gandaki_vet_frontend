@@ -23,7 +23,8 @@ import Services from "./components/services/Services";
 import Unauthorized from "./components/common/Unauthorized";
 import NotFound from "./components/common/NotFound";
 import PrescriptionForm from "./components/prescriptions/PrescriptionForm"
-
+import Branches from "./components/branch/Branches";
+import Attendance from "./components/attendance/Attendance";
 import Login from "./auth/Login";
 
 /* -------------------------------------------------------------------------- */
@@ -164,6 +165,13 @@ function App() {
               />
             }
           >
+
+
+            <Route
+  path="/attendance"
+  element={<Attendance />}
+/>
+
             <Route
               path="owners"
               element={<PetOwners />}
@@ -256,6 +264,23 @@ function App() {
               element={<StaffList />}
             />
           </Route>
+
+
+
+          {/* ================= BRANCHES ================= */}
+
+<Route
+  element={
+    <ProtectedRoute
+      allowedRoles={ADMIN_ROLES}
+    />
+  }
+>
+  <Route
+    path="branches"
+    element={<Branches />}
+  />
+</Route>
 
           {/* Sales */}
 

@@ -25,6 +25,9 @@ import {
   WalletCards,
 } from "lucide-react";
 
+import { Building2, Plus } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+
 import dashboardService from "../../services/dashboard.service";
 import "./Dashboard.css";
 
@@ -763,7 +766,7 @@ function Dashboard() {
 
   function handleExport() {
     const rows = [
-      ["Pokhara Pet Hospital Dashboard"],
+      ["Gandaki vet and pet Dashboard"],
       ["Period", selectedPeriodLabel],
       [],
       ["Overview"],
