@@ -25,14 +25,24 @@ import {
 
 import appointmentService from "../../services/appointment.service";
 import prescriptionService from "../../services/prescription.service";
+import apiRequest from "../../services/api";
+import {
+  createEmptyRdtReport,
+  hasRdtResult,
+  normalizeRdtReport,
+  rdtRequestPayload,
+  RdtTab,
+  PrintableRdtReport,
+} from "../../components/services/RdtReport";
 import "./PrescriptionForm.css";
+import "./PrescriptionForm.print-fix.css";
 
 const CLINIC = {
-  name: "Gandaki vet and pet",
+  name: "Gandaki Vet and Pet Clinic",
   subtitle: "Veterinary Clinic & Pet Care Centre",
-  address: "Pokhara, Kaski, Nepal",
+  address: "Ranipauwa-11, Pokhara",
   phone: "+977-9802859465",
-  email: "pokharapethouse@example.com",
+  email: "",
   registration: "Clinic Reg. No.: __________",
 };
 
@@ -41,6 +51,7 @@ const TABS = [
   { id: "medicines", label: "Medicines", icon: Pill },
   { id: "blood", label: "Blood Report", icon: Microscope },
   { id: "laboratory", label: "Laboratory", icon: FlaskConical },
+  { id: "rdt", label: "RDT", icon: FlaskConical },
   { id: "imaging", label: "Imaging", icon: Image },
   { id: "vaccination", label: "Vaccination", icon: ShieldPlus },
   { id: "other", label: "Other Reports", icon: FileText },
@@ -303,6 +314,16 @@ function PrescriptionForm() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  // Separate clinical RDT record. Can be saved without filling a prescription.
+  const [rdtReport, setRdtReport] = useState(createEmptyRdtReport);
+  const [savedRdtReport, setSavedRdtReport] = useState(null);
+  const [rdtSaved, setRdtSaved] = useState(false);
+  const [rdtDirty, setRdtDirty] = useState(false);
+  const [rdtLoading, setRdtLoading] = useState(true);
+  const [rdtSaving, setRdtSaving] = useState(false);
+  const [rdtError, setRdtError] = useState("");
+  const [rdtSuccess, setRdtSuccess] = useState("");
+
   //  NEW: State for appointment status
   const [appointmentStatus, setAppointmentStatus] = useState("");
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -335,6 +356,13 @@ function PrescriptionForm() {
         setAppointment(null);
         setPrescriptionId(null);
         setFormData(initialForm);
+        setRdtReport(createEmptyRdtReport());
+        setSavedRdtReport(null);
+        setRdtSaved(false);
+        setRdtDirty(false);
+        setRdtLoading(true);
+        setRdtError("");
+        setRdtSuccess("");
 
         console.log("📋 Loading appointment:", appointmentId);
 
@@ -347,6 +375,22 @@ function PrescriptionForm() {
         const appointmentData = appointmentResult?.data || appointmentResult;
         setAppointment(appointmentData);
         console.log("✅ Appointment loaded:", appointmentData?.appointmentNo);
+
+        // Load RDT from its own appointment-scoped API. Missing report is normal.
+        try {
+          const rdtResponse = await apiRequest(`/appointments/${encodeURIComponent(appointmentId)}/rdt`);
+          const existingRdt = rdtResponse?.data ?? null;
+          if (existingRdt) {
+            const normalized = normalizeRdtReport(existingRdt);
+            setRdtReport(normalized);
+            setSavedRdtReport(normalized);
+            setRdtSaved(true);
+          }
+        } catch (rdtRequestError) {
+          setRdtError(rdtRequestError?.message || "Unable to load saved RDT results.");
+        } finally {
+          setRdtLoading(false);
+        }
 
         // Try to fetch existing prescription
         try {
@@ -425,6 +469,7 @@ function PrescriptionForm() {
         setError(requestError?.message || "Unable to load appointment details.");
       } finally {
         setLoading(false);
+        setRdtLoading(false);
       }
     }
 
@@ -455,6 +500,8 @@ function PrescriptionForm() {
     // Wait for React to paint PrintablePrescription with the fetched record.
     const timer = window.setTimeout(() => {
       autoPrintedRef.current = true;
+      document.body.classList.remove("rdt-print-mode");
+      document.body.classList.add("prescription-print-mode");
       window.print();
     }, 300);
 
@@ -494,6 +541,73 @@ function PrescriptionForm() {
     }));
   }, [appointment?.pet?.species?.name]);
 
+
+  function updateRdtField(field, value) {
+    setRdtReport((previous) => ({ ...previous, [field]: value }));
+    setRdtDirty(true);
+    setRdtSuccess("");
+    setRdtError("");
+  }
+
+  function updateRdtResult(test, field, value) {
+    setRdtReport((previous) => ({
+      ...previous,
+      results: previous.results.map((row) =>
+        row.test === test ? { ...row, [field]: value } : row,
+      ),
+    }));
+    setRdtDirty(true);
+    setRdtSuccess("");
+    setRdtError("");
+  }
+
+  async function saveRdtReport({ notify = true } = {}) {
+    if (!hasRdtResult(rdtReport) && !rdtSaved) {
+      setRdtError("Select at least one test result before saving the RDT report.");
+      setActiveTab("rdt");
+      return false;
+    }
+    try {
+      setRdtSaving(true);
+      setRdtError("");
+      const response = await apiRequest(`/appointments/${encodeURIComponent(appointmentId)}/rdt`, {
+        method: "POST",
+        body: JSON.stringify(rdtRequestPayload(rdtReport)),
+      });
+      const normalized = normalizeRdtReport(response?.data);
+      setRdtReport(normalized);
+      setSavedRdtReport(normalized);
+      setRdtSaved(true);
+      setRdtDirty(false);
+      if (notify) setRdtSuccess("RDT report saved successfully.");
+      return true;
+    } catch (requestError) {
+      setRdtError(requestError?.message || "Unable to save RDT results.");
+      return false;
+    } finally {
+      setRdtSaving(false);
+    }
+  }
+
+  function handlePrintRdt() {
+    if (!rdtSaved || rdtDirty || !hasRdtResult(savedRdtReport)) {
+      setRdtError("Save the RDT results before printing.");
+      return;
+    }
+    document.body.classList.remove("prescription-print-mode");
+    document.body.classList.add("rdt-print-mode");
+    const cleanUp = () => {
+      document.body.classList.remove("rdt-print-mode");
+      window.removeEventListener("afterprint", cleanUp);
+    };
+    window.addEventListener("afterprint", cleanUp);
+    window.setTimeout(() => window.print(), 50);
+  }
+
+  useEffect(() => () => {
+    document.body.classList.remove("rdt-print-mode");
+    document.body.classList.remove("prescription-print-mode");
+  }, []);
 
   function handleSaveClick() {
     if (!validate()) return;
@@ -809,11 +923,17 @@ function PrescriptionForm() {
       |--------------------------------------------------------------------------
       */
 
+      const shouldSaveRdt = rdtDirty && (hasRdtResult(rdtReport) || rdtSaved);
+      const rdtSavedOk = !shouldSaveRdt || await saveRdtReport({ notify: false });
+
       setSuccess(
-        selectedStatus === "HOSPITALIZED"
+        !rdtSavedOk
+          ? "Prescription saved, but the RDT report was NOT saved. Open the RDT tab and retry."
+          : selectedStatus === "HOSPITALIZED"
           ? "Prescription saved and patient hospitalized successfully."
           : "Prescription and clinical record saved successfully."
       );
+      if (!rdtSavedOk) setActiveTab("rdt");
       // If we just created a new prescription, refresh the page data
       if (!prescriptionId && saved?.id) {
         console.log(" Refreshing data with new prescription ID:", saved.id);
@@ -847,6 +967,13 @@ function PrescriptionForm() {
       return;
     }
     setError("");
+    document.body.classList.remove("rdt-print-mode");
+    document.body.classList.add("prescription-print-mode");
+    const cleanUp = () => {
+      document.body.classList.remove("prescription-print-mode");
+      window.removeEventListener("afterprint", cleanUp);
+    };
+    window.addEventListener("afterprint", cleanUp);
     setTimeout(() => window.print(), 50);
   }
 
@@ -998,6 +1125,21 @@ function PrescriptionForm() {
           {activeTab === "laboratory" && (
             <RepeatableSection title="Laboratory Requests" description="Add requested investigations when applicable." icon={FlaskConical} items={formData.laboratoryTests} template={emptyLab} collectionKey="laboratoryTests" onAdd={addArrayItem} onRemove={removeArrayItem} emptyLabel="No additional laboratory tests added." renderItem={(item, index) => <LabFields item={item} index={index} onChange={updateArrayItem} />} />
           )}
+          {activeTab === "rdt" && (
+            <RdtTab
+              report={rdtReport}
+              onFieldChange={updateRdtField}
+              onResultChange={updateRdtResult}
+              onSave={() => saveRdtReport()}
+              onPrint={handlePrintRdt}
+              saving={rdtSaving}
+              saved={rdtSaved}
+              dirty={rdtDirty}
+              loading={rdtLoading}
+              error={rdtError}
+              success={rdtSuccess}
+            />
+          )}
           {activeTab === "imaging" && (
             <ImagingTab
               items={formData.imagingRequests}
@@ -1017,7 +1159,10 @@ function PrescriptionForm() {
         </main>
       </div>
 
-      <PrintablePrescription clinic={CLINIC} appointment={appointment} formData={formData} patientName={patientName} ownerName={ownerName} doctorName={doctorName} prescriptionId={prescriptionId} />
+      <PrintablePrescription clinic={CLINIC} appointment={appointment} formData={formData} rdtReport={savedRdtReport} patientName={patientName} ownerName={ownerName} doctorName={doctorName} prescriptionId={prescriptionId} />
+      <div className="rdt-print-document" aria-hidden="true">
+        <PrintableRdtReport clinic={CLINIC} appointment={appointment} report={savedRdtReport} patientName={patientName} ownerName={ownerName} doctorName={doctorName} />
+      </div>
 
       {showStatusModal && (
         <div
@@ -1793,7 +1938,7 @@ function ImagingFields({ item, index, onChange }) {
 
 function VaccinationFields({ item, index, onChange }) { return <div className="row g-3"><MiniField label="Vaccine" value={item.vaccineName} onChange={(v) => onChange("vaccinations", index, "vaccineName", v)} col="col-md-3" /><MiniField label="Dose" value={item.dose} onChange={(v) => onChange("vaccinations", index, "dose", v)} col="col-md-2" /><MiniSelect label="Route" value={item.route} onChange={(v) => onChange("vaccinations", index, "route", v)} col="col-md-2" options={["SUBCUTANEOUS", "INTRAMUSCULAR", "INTRANASAL", "ORAL", "OTHER"]} /><MiniField label="Batch no." value={item.batchNo} onChange={(v) => onChange("vaccinations", index, "batchNo", v)} col="col-md-2" /><MiniField label="Manufacturer" value={item.manufacturer} onChange={(v) => onChange("vaccinations", index, "manufacturer", v)} col="col-md-3" /><MiniField label="Administered date" type="date" value={item.administeredDate} onChange={(v) => onChange("vaccinations", index, "administeredDate", v)} col="col-md-3" /><MiniField label="Next due date" type="date" value={item.nextDueDate} onChange={(v) => onChange("vaccinations", index, "nextDueDate", v)} col="col-md-3" /><MiniField label="Notes" value={item.notes} onChange={(v) => onChange("vaccinations", index, "notes", v)} col="col-md-6" /></div>; }
 
-function PrintablePrescription({ clinic, appointment, formData, patientName, ownerName, doctorName, prescriptionId }) {
+function PrintablePrescription({ clinic, appointment, formData, rdtReport, patientName, ownerName, doctorName, prescriptionId }) {
   const pet = appointment?.pet;
   const blood = formData.bloodReport;
 
@@ -1973,6 +2118,7 @@ function PrintablePrescription({ clinic, appointment, formData, patientName, own
           </PrintSection>
         )}
 
+      {/* RDT is printed as its own report, not inside the prescription. */}
       {formData.laboratoryTests.length > 0 && <PrintSection title="Additional Laboratory Requests"><SimpleList items={formData.laboratoryTests.map(x => `${x.testName} — ${x.specimen} — ${formatEnum(x.priority)} — ${x.instructions}`)} /></PrintSection>}
       {formData.imagingRequests.length > 0 && <PrintSection title="Imaging Requests"><SimpleList items={formData.imagingRequests.map(x => { const result = x.result || {}; return `${formatEnum(x.type)}: ${x.bodyPart || ""}, ${x.views || ""}; ${formatEnum(x.priority)}. ${x.clinicalHistory || ""}${result.findings || result.impression ? ` Result — Findings: ${result.findings || "—"}; Impression: ${result.impression || "—"}.` : ""}`; })} /></PrintSection>}
       {formData.vaccinations.length > 0 && <PrintSection title="Vaccination Record"><SimpleList items={formData.vaccinations.map(x => `${x.vaccineName}, ${x.dose}, ${formatEnum(x.route)}, Batch ${x.batchNo}, ${x.manufacturer}, administered ${x.administeredDate}, next due ${x.nextDueDate}. ${x.notes}`)} /></PrintSection>}

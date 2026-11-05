@@ -1,0 +1,39 @@
+/* Print-only documents must not render visibly on the prescription route. */
+@media screen {
+  .prescription-page > .print-prescription,
+  .prescription-page > .rdt-print-document,
+  .prescription-page .print-rdt-report {
+    display: none !important;
+  }
+}
+
+@media print {
+  /* RDT report: print only the dedicated RDT sheet. */
+  body.rdt-print-mode .prescription-page > :not(.rdt-print-document) {
+    display: none !important;
+  }
+  body.rdt-print-mode .prescription-page > .rdt-print-document,
+  body.rdt-print-mode .prescription-page .print-rdt-report {
+    display: block !important;
+    visibility: visible !important;
+  }
+  body.rdt-print-mode .prescription-page .rdt-print-document * {
+    visibility: visible !important;
+  }
+
+  /* Prescription report: omit the separate RDT sheet. */
+  body.prescription-print-mode .prescription-page > :not(.print-prescription) {
+    display: none !important;
+  }
+  body.prescription-print-mode .prescription-page > .print-prescription {
+    display: block !important;
+    visibility: visible !important;
+  }
+  body.prescription-print-mode .prescription-page .print-prescription * {
+    visibility: visible !important;
+  }
+
+  .prescription-page .screen-only {
+    display: none !important;
+  }
+}

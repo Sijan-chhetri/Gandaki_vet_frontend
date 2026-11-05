@@ -1,715 +1,768 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+// src/pages/Attendance.jsx (adjust the import path for your project)
+// Receptionists manage attendance. Admins/Super Admins have read-only clinic-wide reporting.
+// Uses Bootstrap 5 + lucide-react.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle,
-  Building2,
-  CalendarDays,
-  CheckCircle2,
-  Clock3,
-  ClipboardCheck,
-  Download,
-  LoaderCircle,
-  LogIn,
-  LogOut,
-  RefreshCw,
-  Search,
-  ShieldCheck,
-  Users,
+  AlertCircle, ArrowRight, Building2, CalendarDays, Check, CheckCircle2,
+  ClipboardCheck, Clock3, Download, Filter, History, LoaderCircle, LogIn,
+  LogOut, RefreshCw, Search, ShieldAlert, UserCheck, UserRound, Users,
+  X, XCircle, Eye,
 } from "lucide-react";
-
 import apiRequest from "../../services/api";
 
-const ADMIN_ROLES = new Set(["ADMIN", "SUPER_ADMIN"]);
-const STAFF_ROLES = new Set([
-  "VETERINARIAN", "VET_ASSISTANT", "RECEPTIONIST", "CASHIER", "INVENTORY_MANAGER",
-]);
-const STATUS_LABELS = {
-  PRESENT: "Present",
-  ABSENT: "Absent",
-  ON_LEAVE: "On leave",
-};
+const PREFIX = "/attendance";
+// Use the shared clinic branch listing, not /attendance/branches.
+const BRANCHES_ENDPOINT = "/branches/attendance";
+const PAGE_SIZE = 30;
 
-function getStoredUser() {
-  try {
-    for (const key of ["user", "authUser", "currentUser"]) {
-      const raw = localStorage.getItem(key);
-      if (!raw) continue;
-      const parsed = JSON.parse(raw);
-      const user = parsed?.user || parsed?.data?.user || parsed?.data || parsed;
-      if (user && typeof user === "object" && user.role) return user;
-    }
-  } catch (error) {
-    console.error("Unable to read signed-in user", error);
-  }
-  return null;
-}
-
-function extractArray(response, keys = []) {
-  const candidates = [
-    response, response?.data, response?.data?.data,
-    ...keys.flatMap((key) => [
-      response?.[key], response?.data?.[key], response?.data?.data?.[key],
-    ]),
-  ];
-  return candidates.find(Array.isArray) || [];
-}
-
-function todayInKathmandu() {
+function todayKathmandu() {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Kathmandu", year: "numeric", month: "2-digit", day: "2-digit",
+    year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Kathmandu",
   }).formatToParts(new Date());
-  const fields = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${fields.year}-${fields.month}-${fields.day}`;
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${map.year}-${map.month}-${map.day}`;
 }
 
-function firstDayOfMonth(dateString) {
-  return `${dateString.slice(0, 7)}-01`;
+function firstDayOfMonth(day) {
+  return `${day.slice(0, 7)}-01`;
 }
 
-function formatTime(value) {
+// Role controls which actions the UI offers; the backend is the authority.
+// Support the login storage formats used across clinic pages, including nested
+// user objects and token payloads, so a valid login is not mistaken for a guest.
+function normalizedRole(value) {
+  if (value && typeof value === "object") {
+    return normalizedRole(value.name || value.code || value.value || "");
+  }
+  return String(value || "").trim().toUpperCase();
+}
+
+function getRole() {
+  const candidates = ["user", "authUser", "currentUser", "userData", "auth", "authData", "profile", "role"];
+  const nestedRole = (value, depth = 0) => {
+    if (!value || depth > 6) return "";
+    if (typeof value === "string") {
+      const role = normalizedRole(value);
+      if (["ADMIN", "SUPER_ADMIN", "RECEPTIONIST"].includes(role)) return role;
+      if (value.trim().startsWith("{") || value.trim().startsWith("[")) {
+        try { return nestedRole(JSON.parse(value), depth + 1); } catch { return ""; }
+      }
+      return "";
+    }
+    if (typeof value !== "object") return "";
+    const direct = normalizedRole(value.role || value.userRole || value.roleName);
+    if (["ADMIN", "SUPER_ADMIN", "RECEPTIONIST"].includes(direct)) return direct;
+    for (const key of ["user", "currentUser", "authUser", "profile", "data", "auth", "state"]) {
+      const found = nestedRole(value[key], depth + 1);
+      if (found) return found;
+    }
+    return "";
+  };
+
+  const stores = [
+    typeof localStorage === "undefined" ? null : localStorage,
+    typeof sessionStorage === "undefined" ? null : sessionStorage,
+  ].filter(Boolean);
+  for (const store of stores) {
+    for (const key of candidates) {
+      try {
+        const role = nestedRole(store.getItem(key));
+        if (role) return role;
+      } catch { /* An inaccessible storage entry is ignored. */ }
+    }
+    // The JWT is used only for non-security-critical UI role detection.
+    // All branch access and attendance writes are verified on the server.
+    for (const key of ["accessToken", "access_token", "token", "authToken", "jwt"]) {
+      try {
+        const raw = store.getItem(key) || "";
+        const payload = raw.split(".")[1];
+        if (!payload) continue;
+        const decoded = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(payload.length / 4) * 4, "=")));
+        const role = nestedRole(decoded);
+        if (role) return role;
+      } catch { /* Invalid or non-JWT storage values are ignored. */ }
+    }
+  }
+  return "";
+}
+
+function unwrap(response) {
+  if (response?.success === false) throw new Error(response.message || "Request unsuccessful");
+  if (response?.data?.success === false) throw new Error(response.data.message || "Request unsuccessful");
+  // apiRequest typically returns { success, data }. Also support {data:{success,data}}.
+  if (response?.data?.data && !response?.data?.staff && !response?.data?.branches &&
+      !response?.data?.records && !response?.data?.pagination) {
+    return response.data.data;
+  }
+  return response?.data ?? response;
+}
+
+// The authenticated GET /api/v1/branches currently returns:
+// {success:true, message:"Branches fetched successfully", data:[{id,name,...}]}
+// Accept an Axios response wrapper and other commonly used API-helper wrappers.
+function extractBranches(response) {
+  const visited = new Set();
+  function findList(value, depth = 0) {
+    if (depth > 7 || value == null) return null;
+    if (typeof value === "string") {
+      try { return findList(JSON.parse(value), depth + 1); } catch { return null; }
+    }
+    if (Array.isArray(value)) return value;
+    if (typeof value !== "object" || visited.has(value)) return null;
+    visited.add(value);
+    for (const key of ["branches", "data", "results", "items", "payload"]) {
+      const found = findList(value[key], depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  const list = findList(response);
+  if (!Array.isArray(list)) {
+    throw new Error("Branches response was not an array. Expected { success: true, data: [...] } from GET /api/v1/branches.");
+  }
+  return list.filter((branch) =>
+    branch && typeof branch === "object" && String(branch.id || "").trim() && String(branch.name || "").trim()
+  );
+}
+
+function displayName(user) {
+  if (!user) return "Unknown staff";
+  return [user.firstName, user.lastName].filter(Boolean).join(" ").trim() || user.name || "Unnamed staff";
+}
+
+function labelize(text) {
+  return String(text || "").replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function displayDay(value) {
+  if (!value) return "—";
+  const day = String(value).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return "—";
+  const date = new Date(`${day}T12:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? day : date.toLocaleDateString("en-GB", {
+    day: "2-digit", month: "short", year: "numeric", timeZone: "UTC",
+  });
+}
+
+function displayTime(value, timezone = "Asia/Kathmandu") {
   if (!value) return "—";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("en-NP", {
-    timeZone: "Asia/Kathmandu", hour: "2-digit", minute: "2-digit", hour12: true,
-  }).format(date);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString("en-GB", {
+    hour: "2-digit", minute: "2-digit", hour12: true, timeZone: timezone,
+  });
 }
 
-function formatDate(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  // attendanceDate is a date-only field stored as midnight UTC.
-  return new Intl.DateTimeFormat("en-NP", {
-    timeZone: "UTC", year: "numeric", month: "short", day: "numeric",
-  }).format(date);
-}
-
-function formatMinutes(value) {
-  const minutes = Math.max(0, Number(value) || 0);
+function displayDuration(value) {
+  const minutes = Number(value || 0);
+  if (!Number.isFinite(minutes) || minutes <= 0) return "—";
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
   return hours ? `${hours}h ${remainder}m` : `${remainder}m`;
 }
 
-function fullName(user) {
-  return [user?.firstName, user?.lastName].filter(Boolean).join(" ") || "Unknown employee";
+function statusFrom(entry) {
+  if (!entry?.attendance) return "NOT_MARKED";
+  if (entry.attendance.status === "PRESENT" && entry.attendance.checkInAt && !entry.attendance.checkOutAt) return "CHECKED_IN";
+  if (entry.attendance.status === "PRESENT" && entry.attendance.checkOutAt) return "CHECKED_OUT";
+  return entry.attendance.status || "NOT_MARKED";
 }
 
-function statusBadge(status) {
-  const style = status === "PRESENT"
-    ? "bg-success-subtle text-success"
-    : status === "ABSENT"
-      ? "bg-danger-subtle text-danger"
-      : "bg-warning-subtle text-warning-emphasis";
-  return <span className={`badge rounded-pill ${style}`}>{STATUS_LABELS[status] || status || "—"}</span>;
+const STATUS_LOOKUP = {
+  NOT_MARKED: { name: "Not marked", cls: "bg-light text-secondary border" },
+  CHECKED_IN: { name: "Checked in", cls: "bg-primary-subtle text-primary border border-primary-subtle" },
+  CHECKED_OUT: { name: "Checked out", cls: "bg-success-subtle text-success-emphasis border border-success-subtle" },
+  PRESENT: { name: "Present", cls: "bg-success-subtle text-success-emphasis border border-success-subtle" },
+  ABSENT: { name: "Absent", cls: "bg-danger-subtle text-danger-emphasis border border-danger-subtle" },
+  ON_LEAVE: { name: "On leave", cls: "bg-warning-subtle text-warning-emphasis border border-warning-subtle" },
+};
+
+function StatusPill({ status }) {
+  const config = STATUS_LOOKUP[status] || STATUS_LOOKUP.NOT_MARKED;
+  return <span className={`badge rounded-pill px-3 py-2 fw-semibold ${config.cls}`}>{config.name}</span>;
 }
 
-function getErrorMessage(error, fallback) {
-  return error?.message || fallback;
-}
-
-function SummaryCard({ label, value, icon: Icon, tone = "primary" }) {
+function MetricCard({ icon: Icon, label, value, color }) {
   return (
-    <div className="col-6 col-xl-3">
-      <div className="card border-0 shadow-sm rounded-4 h-100">
-        <div className="card-body d-flex align-items-center justify-content-between gap-2">
+    <div className="col-6 col-lg-3 col-xxl-2">
+      <div className="attendance-metric h-100">
+        <span className={`attendance-metric-icon ${color}`}><Icon size={19} /></span>
+        <span className="attendance-metric-number">{value ?? 0}</span>
+        <span className="attendance-metric-label">{label}</span>
+      </div>
+    </div>
+  );
+}
+
+function getActions(entry, date, today, branchId) {
+  const record = entry.attendance;
+  const active = entry.activeCheckIn;
+  const hasWorked = Boolean(record?.checkInAt);
+  const activeHere = Boolean(active && active.branchId === branchId);
+  return [
+    { key: "check-in", label: "Check in", icon: LogIn, cls: "btn-primary",
+      disabled: date !== today || hasWorked || Boolean(active) || record?.status === "PRESENT" },
+    { key: "check-out", label: "Check out", icon: LogOut, cls: "btn-outline-primary",
+      disabled: !activeHere },
+    { key: "ABSENT", label: "Mark absent", icon: XCircle, cls: "btn-outline-danger",
+      disabled: date > today || hasWorked || Boolean(active) },
+    { key: "ON_LEAVE", label: "On leave", icon: CalendarDays, cls: "btn-outline-warning",
+      disabled: hasWorked || Boolean(active) },
+  ];
+}
+
+function AttendanceActionModal({ action, selectedDate, today, onClose, onConfirm, submitting }) {
+  const [notes, setNotes] = useState("");
+  useEffect(() => {
+    function escape(e) { if (e.key === "Escape" && !submitting) onClose(); }
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [onClose, submitting]);
+  const actionLabels = {
+    "check-in": "Check in employee",
+    "check-out": "Check out employee",
+    ABSENT: "Mark employee absent",
+    ON_LEAVE: "Mark employee on leave",
+  };
+  const displayLabel = actionLabels[action.kind] || "Update attendance";
+  const needsNotes = action.kind === "ABSENT" || action.kind === "ON_LEAVE";
+  const isCorrection = action.entry.attendance && ["ABSENT", "ON_LEAVE"].includes(action.entry.attendance.status) &&
+    action.kind === "check-in";
+  return (
+    <div className="attendance-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) onClose(); }}>
+      <div className="attendance-dialog" role="dialog" aria-modal="true" aria-label={displayLabel}>
+        <div className="d-flex justify-content-between align-items-start gap-3 mb-3">
           <div>
-            <small className="text-secondary">{label}</small>
-            <h3 className="fw-bold mb-0 mt-1">{value}</h3>
+            <div className="small fw-semibold text-primary text-uppercase" style={{letterSpacing: ".08em"}}>Attendance action</div>
+            <h5 className="fw-bold mb-0 mt-1">{displayLabel}</h5>
           </div>
-          <div className={`p-3 rounded-3 bg-${tone}-subtle text-${tone}`}>
-            <Icon size={23} />
-          </div>
+          <button type="button" className="btn btn-sm btn-light border" aria-label="Close" disabled={submitting} onClick={onClose}><X size={16}/></button>
         </div>
+        <div className="attendance-dialog-summary">
+          <div className="attendance-avatar"><UserRound size={19}/></div>
+          <div><strong>{displayName(action.entry.user)}</strong><small>{labelize(action.entry.user.role)} · {displayDay(action.kind === "check-out" ? action.entry.activeCheckIn?.attendanceDate : selectedDate)}</small></div>
+        </div>
+        {isCorrection && <div className="alert alert-warning py-2 small">This replaces a previously marked {labelize(action.entry.attendance.status)} record with an actual check-in.</div>}
+        {action.kind === "check-out" && <p className="text-secondary small mt-3">The system will use the current time and calculate worked minutes automatically.</p>}
+        {action.kind === "ABSENT" && selectedDate === today && <p className="text-secondary small mt-3">Confirm this employee is absent today before saving.</p>}
+        {action.kind === "ON_LEAVE" && selectedDate > today && <p className="text-secondary small mt-3">You are recording approved leave for a future date.</p>}
+        <form onSubmit={(event) => { event.preventDefault(); onConfirm(notes); }}>
+          <label htmlFor="attendance-action-notes" className="form-label fw-semibold small mt-3">
+            {needsNotes ? "Reason / remarks" : "Notes (optional)"}
+          </label>
+          <textarea id="attendance-action-notes" className="form-control" rows={3} maxLength={1000} required={needsNotes}
+            value={notes} onChange={(event) => setNotes(event.target.value)}
+            placeholder={needsNotes ? "Record leave or absence details" : "Optional shift notes"} />
+          <div className="d-flex gap-2 justify-content-end mt-4">
+            <button className="btn btn-light border" type="button" onClick={onClose} disabled={submitting}>Cancel</button>
+            <button className="btn btn-primary d-inline-flex align-items-center gap-2" type="submit" disabled={submitting}>
+              {submitting ? <LoaderCircle size={16} className="attendance-spin"/> : <Check size={16}/>} Save attendance
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
 }
 
-function Notice({ message, kind = "danger", onClose }) {
-  if (!message) return null;
+// Read-only detail panel. All notes are visible in full (no ellipsis) and
+// includes the receptionist who last recorded the attendance when provided by API.
+function AttendanceRecordDetailsModal({ record, person, branch, selectedDate, timezone, onClose }) {
+  useEffect(() => {
+    const onEscape = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onEscape);
+    return () => window.removeEventListener("keydown", onEscape);
+  }, [onClose]);
+  const status = record ? statusFrom({ attendance: record }) : "NOT_MARKED";
+  const auditPerson = record?.recordedBy;
   return (
-    <div className={`alert alert-${kind} d-flex align-items-start gap-2 rounded-3`} role="alert">
-      {kind === "danger" ? <AlertCircle size={19} /> : <CheckCircle2 size={19} />}
-      <div className="flex-grow-1">{message}</div>
-      {onClose && <button type="button" className="btn-close" aria-label="Dismiss" onClick={onClose} />}
+    <div className="attendance-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="attendance-dialog attendance-detail-dialog" role="dialog" aria-modal="true" aria-label="Staff attendance details">
+        <div className="d-flex align-items-start justify-content-between gap-3 mb-3">
+          <div><small className="text-uppercase text-primary fw-bold">Staff record</small><h5 className="fw-bold mb-0 mt-1">Attendance details</h5></div>
+          <button type="button" className="btn btn-light btn-sm border" onClick={onClose} aria-label="Close"><X size={16}/></button>
+        </div>
+        <div className="attendance-dialog-summary mb-3">
+          <span className="attendance-avatar"><UserRound size={19}/></span>
+          <div><strong>{displayName(person || record?.user)}</strong><small>{labelize((person || record?.user)?.role)}</small></div>
+        </div>
+        <div className="d-flex gap-2 align-items-center mb-3"><StatusPill status={status}/><span className="small text-secondary">{displayDay(record?.attendanceDate || selectedDate)}</span></div>
+        <div className="attendance-detail-grid">
+          <div><span>Branch</span><strong>{branch?.name || record?.branch?.name || "—"}</strong></div>
+          <div><span>Check-in</span><strong>{displayTime(record?.checkInAt, timezone)}</strong></div>
+          <div><span>Check-out</span><strong>{displayTime(record?.checkOutAt, timezone)}</strong></div>
+          <div><span>Worked time</span><strong>{displayDuration(record?.workedMinutes)}</strong></div>
+          <div><span>Recorded by</span><strong>{auditPerson ? displayName(auditPerson) : "Not recorded"}</strong></div>
+          <div><span>Last updated</span><strong>{record?.updatedAt ? new Date(record.updatedAt).toLocaleString("en-GB", {timeZone: timezone}) : "—"}</strong></div>
+        </div>
+        <div className="attendance-detail-notes"><div className="fw-bold small mb-2">Leave / absence reason and attendance notes</div><p className="mb-0">{record?.notes || "No notes were recorded."}</p></div>
+        <div className="d-flex justify-content-end mt-4"><button type="button" className="btn btn-primary" onClick={onClose}>Close</button></div>
+      </div>
     </div>
   );
 }
 
-function Attendance() {
-  const user = useMemo(getStoredUser, []);
-  const role = String(user?.role || "").toUpperCase();
-  const isAdmin = ADMIN_ROLES.has(role);
-  const isEmployee = STAFF_ROLES.has(role);
+function exportCsv(records, filename, timezone) {
+  const csvEscape = (value) => {
+    const raw = String(value ?? "");
+    const safe = /^[\s]*[=+@-]/.test(raw) ? `'${raw}` : raw;
+    return `"${safe.replaceAll('"', '""')}"`;
+  };
+  const lines = [
+    ["Date", "Employee", "Role", "Branch", "Status", "Check in", "Check out", "Worked minutes", "Recorded by", "Notes"],
+    ...records.map((record) => [
+      String(record.attendanceDate || "").slice(0, 10), displayName(record.user),
+      labelize(record.user?.role), record.branch?.name || "", record.status,
+      displayTime(record.checkInAt, timezone), displayTime(record.checkOutAt, timezone),
+      record.workedMinutes ?? "", record.recordedBy ? displayName(record.recordedBy) : "", record.notes || "",
+    ]),
+  ];
+  const csv = "\uFEFF" + lines.map((line) => line.map(csvEscape).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
+export default function Attendance() {
+  const currentRole = useMemo(getRole, []);
+  const canManage = currentRole === "RECEPTIONIST";
+  const canRead = canManage || currentRole === "ADMIN" || currentRole === "SUPER_ADMIN";
   const [branches, setBranches] = useState([]);
-  const [branchesLoading, setBranchesLoading] = useState(true);
-  const [branchError, setBranchError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [success, setSuccess] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
-  const reload = useCallback(() => setReloadKey((value) => value + 1), []);
-
-  // Staff state: one selected branch for check-in, all owned records for history.
-  const [checkInBranch, setCheckInBranch] = useState("");
-  // Optional employee note to save with a successful check-in.
-  const [checkInNotes, setCheckInNotes] = useState("");
-  const [checkOutNotes, setCheckOutNotes] = useState("");
-  const [myToday, setMyToday] = useState([]);
-  const [activeCheckIn, setActiveCheckIn] = useState(null);
-  const [myHistory, setMyHistory] = useState([]);
-  const [myLoading, setMyLoading] = useState(false);
-  const [historyFrom, setHistoryFrom] = useState(() => firstDayOfMonth(todayInKathmandu()));
-  const [historyTo, setHistoryTo] = useState(todayInKathmandu);
-  const [historyBranch, setHistoryBranch] = useState("all");
-  const [nowMs, setNowMs] = useState(() => Date.now());
-
-  // Admin state: branch/day filtering and marking employee absence or leave.
-  const [reportBranch, setReportBranch] = useState("all");
-  const [reportDate, setReportDate] = useState(todayInKathmandu);
-  const [reportSearch, setReportSearch] = useState("");
-  const [reportPage, setReportPage] = useState(1);
-  const [reportRows, setReportRows] = useState([]);
-  const [reportPagination, setReportPagination] = useState({ page: 1, total: 0, totalPages: 0 });
-  const [reportLoading, setReportLoading] = useState(false);
-  const [markBranch, setMarkBranch] = useState("");
-  const [markUser, setMarkUser] = useState("");
-  const [markDate, setMarkDate] = useState(todayInKathmandu);
-  const [markStatus, setMarkStatus] = useState("ABSENT");
-  const [markNotes, setMarkNotes] = useState("");
+  const [branchId, setBranchId] = useState("");
+  const [date, setDate] = useState(todayKathmandu);
+  const [today, setToday] = useState(todayKathmandu);
+  const [timezone, setTimezone] = useState("Asia/Kathmandu");
+  const [branchLoading, setBranchLoading] = useState(true);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [staff, setStaff] = useState([]);
-  const [staffLoading, setStaffLoading] = useState(false);
+  const [summary, setSummary] = useState(null);
+  const [search, setSearch] = useState("");
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [tab, setTab] = useState("daily");
+  const [historyRows, setHistoryRows] = useState([]);
+  const [historyFrom, setHistoryFrom] = useState(() => firstDayOfMonth(todayKathmandu()));
+  const [historyTo, setHistoryTo] = useState(todayKathmandu);
+  const [historyUserId, setHistoryUserId] = useState("");
+  const [leaveStatus, setLeaveStatus] = useState("LEAVE_OR_ABSENT");
+  const [historyStatusCounts, setHistoryStatusCounts] = useState({ PRESENT: 0, ABSENT: 0, ON_LEAVE: 0 });
+  const [detailRecord, setDetailRecord] = useState(null);
+  const [historyPagination, setHistoryPagination] = useState({ page: 1, total: 0, totalPages: 0 });
+  const [modalAction, setModalAction] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const latestOverviewRequest = useRef(0);
+  const latestHistoryRequest = useRef(0);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 60000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchBranches() {
-      setBranchesLoading(true);
-      setBranchError("");
-      try {
-        const response = await apiRequest("/users/me/branches");
-        if (cancelled) return;
-        const activeBranches = extractArray(response, ["branches"])
-          .filter((branch) => branch?.id && branch?.isActive !== false);
-        setBranches(activeBranches);
-        setCheckInBranch((previous) =>
-          activeBranches.some((branch) => branch.id === previous)
-            ? previous
-            : activeBranches.find((branch) => branch.isMain)?.id || activeBranches[0]?.id || ""
-        );
-        setMarkBranch((previous) =>
-          activeBranches.some((branch) => branch.id === previous)
-            ? previous
-            : activeBranches.find((branch) => branch.isMain)?.id || activeBranches[0]?.id || ""
-        );
-      } catch (error) {
-        if (cancelled) return;
-        setBranches([]);
-        setBranchError(getErrorMessage(error, "Unable to load your accessible branches."));
-      } finally {
-        if (!cancelled) setBranchesLoading(false);
+  const loadBranches = useCallback(async () => {
+    setBranchLoading(true);
+    setError("");
+    try {
+      const response = await apiRequest(BRANCHES_ENDPOINT);
+      const list = extractBranches(response);
+      // The generic /branches endpoint does not provide attendance metadata.
+      // Role permissions are also enforced by the attendance controllers.
+      const viewableBranches = canManage
+        ? list.filter((branch) => branch.isActive !== false)
+        : list;
+      const adminView = currentRole === "ADMIN" || currentRole === "SUPER_ADMIN";
+      setBranches(viewableBranches);
+      if (viewableBranches.length === 0) {
+        setError("The branch API returned no active branches. Check clinic branch status and role permissions.");
       }
-    }
-    fetchBranches();
-    return () => { cancelled = true; };
-  }, [reloadKey]);
+      setToday(todayKathmandu());
+      setTimezone("Asia/Kathmandu");
+      setBranchId((old) =>
+        (old === "all" && adminView) || viewableBranches.some((branch) => branch.id === old)
+          ? old
+          : adminView ? "all" : (viewableBranches[0]?.id || "")
+      );
+    } catch (requestError) {
+      setBranches([]);
+      setBranchId("");
+      setError(requestError.message || "Unable to load clinic branches");
+    } finally { setBranchLoading(false); }
+  }, [canManage, currentRole]);
+
+  const loadOverview = useCallback(async () => {
+    const requestId = ++latestOverviewRequest.current;
+    if (!branchId) { setStaff([]); setSummary(null); return; }
+    setOverviewLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({ branchId, date });
+      const payload = unwrap(await apiRequest(`${PREFIX}/staff/overview?${params}`));
+      if (requestId !== latestOverviewRequest.current) return;
+      setStaff(Array.isArray(payload.staff) ? payload.staff : []);
+      setSummary(payload.summary || null);
+      if (payload.today) setToday(payload.today);
+      if (payload.timezone) setTimezone(payload.timezone);
+    } catch (requestError) {
+      if (requestId === latestOverviewRequest.current) {
+        setStaff([]);
+        setSummary(null);
+        setError(requestError.message || "Unable to load attendance");
+      }
+    } finally { if (requestId === latestOverviewRequest.current) setOverviewLoading(false); }
+  }, [branchId, date]);
+
+  const loadHistory = useCallback(async (page = 1) => {
+    const requestId = ++latestHistoryRequest.current;
+    if (!branchId) return;
+    setHistoryLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({ branchId, from: historyFrom, to: historyTo,
+        page: String(page), limit: String(PAGE_SIZE) });
+      if (tab === "leave") params.set("status", leaveStatus);
+      if (historyUserId) params.set("userId", historyUserId);
+      const payload = unwrap(await apiRequest(`${PREFIX}/staff/history?${params}`));
+      if (requestId !== latestHistoryRequest.current) return;
+      setHistoryRows(Array.isArray(payload.records) ? payload.records : []);
+      setHistoryStatusCounts(payload.statusCounts || { PRESENT: 0, ABSENT: 0, ON_LEAVE: 0 });
+      setHistoryPagination(payload.pagination || { page, total: 0, totalPages: 0 });
+    } catch (requestError) {
+      if (requestId === latestHistoryRequest.current) {
+        setHistoryRows([]);
+        setHistoryStatusCounts({ PRESENT: 0, ABSENT: 0, ON_LEAVE: 0 });
+        setHistoryPagination({ page, total: 0, totalPages: 0 });
+        setError(requestError.message || "Unable to load attendance history");
+      }
+    } finally { if (requestId === latestHistoryRequest.current) setHistoryLoading(false); }
+  }, [branchId, historyFrom, historyTo, historyUserId, tab, leaveStatus]);
 
   useEffect(() => {
-    if (!isEmployee) return undefined;
-    let cancelled = false;
-    async function fetchEmployee() {
-      setMyLoading(true);
-      try {
-        const [todayResponse, historyResponse] = await Promise.all([
-          apiRequest("/attendance/me/today"),
-          apiRequest(`/attendance/me/history?from=${historyFrom}&to=${historyTo}`),
-        ]);
-        if (cancelled) return;
-        const todayData = todayResponse?.data?.data || todayResponse?.data || todayResponse;
-        setMyToday(Array.isArray(todayData?.today) ? todayData.today : []);
-        setActiveCheckIn(todayData?.activeCheckIn || null);
-        setMyHistory(extractArray(historyResponse, ["records", "attendance"]));
-      } catch (error) {
-        if (!cancelled) setNotice(getErrorMessage(error, "Could not retrieve your attendance."));
-      } finally {
-        if (!cancelled) setMyLoading(false);
-      }
-    }
-    fetchEmployee();
-    return () => { cancelled = true; };
-  }, [isEmployee, historyFrom, historyTo, reloadKey]);
+    if (!canRead) { setBranchLoading(false); return; }
+    loadBranches();
+  }, [canRead, loadBranches]);
 
   useEffect(() => {
-    if (!isAdmin) return undefined;
-    let cancelled = false;
-    async function fetchReport() {
-      setReportLoading(true);
-      try {
-        const params = new URLSearchParams({ date: reportDate, page: String(reportPage), limit: "50" });
-        if (reportBranch !== "all") params.set("branchId", reportBranch);
-        const result = await apiRequest(`/attendance/admin?${params.toString()}`);
-        if (cancelled) return;
-        const data = result?.data?.data || result?.data || result;
-        setReportRows(Array.isArray(data?.records) ? data.records : []);
-        setReportPagination(data?.pagination || { page: reportPage, total: 0, totalPages: 0 });
-      } catch (error) {
-        if (!cancelled) {
-          setReportRows([]);
-          setNotice(getErrorMessage(error, "Unable to retrieve branch attendance."));
-        }
-      } finally {
-        if (!cancelled) setReportLoading(false);
-      }
-    }
-    fetchReport();
-    return () => { cancelled = true; };
-  }, [isAdmin, reportBranch, reportDate, reportPage, reloadKey]);
+    if (branchId && canRead) loadOverview();
+    return () => { latestOverviewRequest.current++; };
+  }, [branchId, canRead, loadOverview]);
 
   useEffect(() => {
-    if (!isAdmin || !markBranch || !branches.some((branch) => branch.id === markBranch)) {
-      setStaff([]);
-      setMarkUser("");
-      return undefined;
-    }
-    let cancelled = false;
-    async function fetchStaff() {
-      setStaffLoading(true);
-      try {
-        const collected = [];
-        let page = 1;
-        while (page <= 50) {
-          const params = new URLSearchParams({
-            branchId: markBranch, isActive: "true", page: String(page), limit: "100",
-          });
-          const result = await apiRequest(`/users?${params.toString()}`);
-          if (cancelled) return;
-          const batch = extractArray(result, ["users"]);
-          collected.push(...batch);
-          const pagination = result?.data?.pagination || result?.data?.data?.pagination || result?.pagination;
-          const lastPage = Number(pagination?.totalPages);
-          if ((Number.isFinite(lastPage) && lastPage > 0 && page >= lastPage) || batch.length < 100) break;
-          page += 1;
-        }
-        if (cancelled) return;
-        const employees = collected.filter((entry) =>
-          entry?.id && STAFF_ROLES.has(String(entry.role || "").toUpperCase()) && entry.isActive !== false
-        );
-        setStaff(employees);
-        setMarkUser((previous) => employees.some((item) => item.id === previous) ? previous : "");
-      } catch (error) {
-        if (!cancelled) {
-          setStaff([]);
-          setNotice(getErrorMessage(error, "Unable to load staff for the selected branch."));
-        }
-      } finally {
-        if (!cancelled) setStaffLoading(false);
-      }
-    }
-    fetchStaff();
-    return () => { cancelled = true; };
-  }, [isAdmin, markBranch, branches, reloadKey]);
+    setSelectedUserId("");
+    setHistoryUserId("");
+  }, [branchId]);
 
-  async function performAttendanceAction(action) {
-    if (busy) return;
-    if (action === "check-in" && !checkInBranch) {
-      setNotice("Choose a branch before checking in.");
-      return;
-    }
-    setBusy(true);
-    setNotice("");
+  useEffect(() => {
+    if ((tab === "history" || tab === "leave") && branchId && canRead) loadHistory(1);
+    return () => { latestHistoryRequest.current++; };
+  }, [tab, branchId, canRead, loadHistory]);
+
+  const visibleStaff = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return staff.filter((entry) => !needle ||
+      displayName(entry.user).toLowerCase().includes(needle) ||
+      labelize(entry.user.role).toLowerCase().includes(needle));
+  }, [staff, search]);
+  const selectedEntry = staff.find((entry) => entry.user.id === selectedUserId) || null;
+  const historyStaffUsers = useMemo(() => {
+    const byId = new Map();
+    staff.forEach((entry) => byId.set(entry.user.id, entry.user));
+    return [...byId.values()].sort((a,b) => displayName(a).localeCompare(displayName(b)));
+  }, [staff]);
+
+  async function confirmAction(notes) {
+    if (!canManage || !modalAction || !branchId || submitting) return;
+    const { kind, entry } = modalAction;
+    setSubmitting(true);
+    setError("");
     setSuccess("");
     try {
-      const response = await apiRequest(`/attendance/me/${action}`, {
-        method: "POST",
-        ...(action === "check-in" ? {
-          body: JSON.stringify({
-            branchId: checkInBranch,
-            notes: checkInNotes.trim() || null,
-          }),
-        } : {
-          body: JSON.stringify({ notes: checkOutNotes.trim() || null }),
-        }),
-      });
-      setSuccess(response?.message || (action === "check-in" ? "Checked in successfully." : "Checked out successfully."));
-      // Clear only after a successful check-in; retain text if the request fails.
-      if (action === "check-in") setCheckInNotes("");
-      if (action === "check-out") setCheckOutNotes("");
-      reload();
-    } catch (error) {
-      setNotice(getErrorMessage(error, "Could not update your attendance."));
-    } finally {
-      setBusy(false);
-    }
+      const body = { userId: entry.user.id, branchId, notes };
+      let endpoint = `${PREFIX}/staff/mark`;
+      if (kind === "check-in") endpoint = `${PREFIX}/staff/check-in`;
+      else if (kind === "check-out") endpoint = `${PREFIX}/staff/check-out`;
+      else { body.date = date; body.status = kind; }
+      const response = await apiRequest(endpoint, { method: "POST", body: JSON.stringify(body) });
+      // NOTE: if your services/api.js expects an object body rather than JSON,
+      // replace the line above with: apiRequest(endpoint, { method: "POST", body });
+      if (response?.success === false || response?.data?.success === false) {
+        throw new Error(response.message || response?.data?.message || "Unable to save attendance");
+      }
+      setSuccess(`${displayName(entry.user)}: attendance saved successfully.`);
+      setModalAction(null);
+      await loadOverview();
+      if (tab === "history") await loadHistory(historyPagination.page || 1);
+    } catch (requestError) {
+      setError(requestError?.message || "Could not update attendance");
+      setModalAction(null);
+    } finally { setSubmitting(false); }
   }
 
-  async function handleMarkAttendance(event) {
-    event.preventDefault();
-    if (busy) return;
-    if (!markBranch || !markUser) {
-      setNotice("Select a branch and employee before marking attendance.");
-      return;
-    }
-    setBusy(true);
-    setNotice("");
+  function openAction(kind, entry) {
+    if (!canManage || !entry || !branchId || branchId === "all") return;
+    setModalAction({ kind, entry });
     setSuccess("");
-    try {
-      const response = await apiRequest("/attendance/admin/mark", {
-        method: "POST",
-        body: JSON.stringify({
-          userId: markUser, branchId: markBranch, date: markDate,
-          status: markStatus, notes: markNotes.trim() || null,
-        }),
-      });
-      setSuccess(response?.message || "Attendance marked successfully.");
-      setMarkNotes("");
-      setReportDate(markDate);
-      setReportBranch(markBranch);
-      setReportPage(1);
-      reload();
-    } catch (error) {
-      setNotice(getErrorMessage(error, "Could not mark attendance."));
-    } finally {
-      setBusy(false);
-    }
+    setError("");
   }
 
-  const visibleHistory = useMemo(() =>
-    myHistory.filter((record) => historyBranch === "all" || record.branchId === historyBranch),
-  [myHistory, historyBranch]);
-
-  const matchingReportRows = useMemo(() => {
-    const term = reportSearch.trim().toLowerCase();
-    if (!term) return reportRows;
-    return reportRows.filter((record) =>
-      [fullName(record.user), record.user?.role, record.branch?.name]
-        .some((text) => String(text || "").toLowerCase().includes(term))
+  if (!canRead) {
+    return (
+      <div className="card border-0 shadow-sm rounded-4 p-5 text-center">
+        <ShieldAlert size={42} className="text-danger mx-auto mb-3" />
+        <h4 className="fw-bold">Attendance management is restricted</h4>
+        <p className="text-secondary mb-0">Receptionists manage attendance. Admins and Super Admins can view attendance and leave records. {currentRole ? `Your current role is ${labelize(currentRole)}.` : "Your login role could not be identified from this browser session. Sign out and log in again so the frontend receives the user role."}</p>
+      </div>
     );
-  }, [reportRows, reportSearch]);
-
-  const reportStats = useMemo(() => ({
-    recorded: reportRows.length,
-    present: reportRows.filter((row) => row.status === "PRESENT").length,
-    absent: reportRows.filter((row) => row.status === "ABSENT").length,
-    leave: reportRows.filter((row) => row.status === "ON_LEAVE").length,
-  }), [reportRows]);
-
-  function exportReport() {
-    const rows = [
-      ["Date", "Employee", "Role", "Branch", "Status", "Check in", "Check out", "Worked minutes", "Notes"],
-      ...matchingReportRows.map((record) => [
-        formatDate(record.attendanceDate), fullName(record.user), record.user?.role || "",
-        record.branch?.name || "", record.status || "", formatTime(record.checkInAt),
-        formatTime(record.checkOutAt), record.workedMinutes ?? 0, record.notes || "",
-      ]),
-    ];
-    const csv = rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n");
-    const blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `attendance-${reportDate}-page-${reportPage}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  if (!isAdmin && !isEmployee) {
-    return <Notice message="Your account does not have permission to use attendance." />;
   }
 
   return (
-    <div className="container-fluid px-0">
-      <div className="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
+    <div className="attendance-page">
+      <header className="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
         <div>
-          <div className="d-flex align-items-center gap-2 mb-1">
-            <ClipboardCheck size={24} className="text-primary" />
-            <h3 className="fw-bold mb-0">Attendance</h3>
-          </div>
-          <p className="text-secondary mb-0">
-            {isAdmin ? "Monitor staff attendance across your clinic branches." : "Check in and out at your assigned branch and review your attendance."}
-          </p>
+          <div className="d-flex align-items-center gap-2 mb-1"><ClipboardCheck className="text-primary" size={26} /><h3 className="fw-bold mb-0">Staff Attendance</h3></div>
+          <p className="text-secondary mb-0">{canManage
+            ? "Reception desk · Check staff in or out and manage leave and absence"
+            : "Clinic-wide employee attendance and leave reporting · Read-only administrator access"}</p>
         </div>
-        <button type="button" className="btn btn-light border d-flex align-items-center justify-content-center gap-2" onClick={reload} disabled={busy || branchesLoading || myLoading || reportLoading}>
-          <RefreshCw size={17} /> Refresh
-        </button>
-      </div>
+        <div className="d-flex align-items-center gap-2">
+          <span className="attendance-role-chip"><ShieldAlert size={14} /> {canManage ? "Receptionist · Manage attendance" : "Admin · View only"}</span>
+          <button type="button" className="btn btn-light border d-inline-flex align-items-center gap-2"
+            disabled={branchLoading || overviewLoading} onClick={() => { loadBranches(); if (branchId) loadOverview(); }}>
+            <RefreshCw size={16} className={branchLoading || overviewLoading ? "attendance-spin" : ""} /> Refresh
+          </button>
+        </div>
+      </header>
 
-      <Notice message={branchError} />
-      <Notice message={notice} onClose={() => setNotice("")} />
-      <Notice message={success} kind="success" onClose={() => setSuccess("")} />
+      {error && <div className="alert alert-danger d-flex align-items-center justify-content-between gap-2" role="alert"><span className="d-flex align-items-center gap-2"><AlertCircle size={18}/>{error}</span><button type="button" className="btn-close" aria-label="Dismiss error" onClick={() => setError("")}/></div>}
+      {success && <div className="alert alert-success d-flex justify-content-between align-items-center gap-2" role="status"><span className="d-flex align-items-center gap-2"><CheckCircle2 size={18}/>{success}</span><button type="button" className="btn-close" aria-label="Dismiss message" onClick={() => setSuccess("")}/></div>}
 
-      {isAdmin ? (
-        <>
-          <div className="alert alert-primary border-0 rounded-4 d-flex align-items-start gap-2">
-            <ShieldCheck size={20} className="flex-shrink-0 mt-1" />
-            <span>Administrators manage attendance for clinic employees. ADMIN and SUPER_ADMIN accounts do not clock in or out.</span>
-          </div>
-
-          <div className="card border-0 shadow-sm rounded-4 mb-4">
-            <div className="card-body p-3 p-md-4">
-              <h5 className="fw-bold mb-3">Branch attendance report</h5>
-              <div className="row g-3 align-items-end">
-                <div className="col-md-4">
-                  <label className="form-label fw-semibold" htmlFor="attendance-report-branch">Branch</label>
-                  <select id="attendance-report-branch" className="form-select" value={reportBranch} onChange={(event) => { setReportBranch(event.target.value); setReportPage(1); }} disabled={branchesLoading}>
-                    <option value="all">All branches</option>
-                    {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-                  </select>
-                </div>
-                <div className="col-md-3">
-                  <label className="form-label fw-semibold" htmlFor="attendance-report-date">Date</label>
-                  <input id="attendance-report-date" type="date" className="form-control" value={reportDate} onChange={(event) => { setReportDate(event.target.value); setReportPage(1); }} />
-                </div>
-                <div className="col-md-3">
-                  <label className="form-label fw-semibold" htmlFor="attendance-report-search">Search on this page</label>
-                  <div className="input-group">
-                    <span className="input-group-text bg-white"><Search size={16} /></span>
-                    <input id="attendance-report-search" className="form-control" value={reportSearch} onChange={(event) => setReportSearch(event.target.value)} placeholder="Employee or role" />
-                  </div>
-                </div>
-                <div className="col-md-2">
-                  <button type="button" className="btn btn-outline-primary w-100 d-flex justify-content-center align-items-center gap-2" onClick={exportReport} disabled={!matchingReportRows.length}>
-                    <Download size={16} /> Export CSV
-                  </button>
-                </div>
+      <section className="card border-0 shadow-sm rounded-4 mb-4">
+        <div className="card-body p-3 p-lg-4">
+          <div className="row g-3 align-items-end">
+            <div className="col-sm-6 col-lg-4">
+              <label htmlFor="attendance-branch" className="form-label small fw-semibold"><Building2 size={15} className="me-1"/> Working branch</label>
+              <select id="attendance-branch" className="form-select" value={branchId} disabled={branchLoading} onChange={(e) => setBranchId(e.target.value)}>
+                {!canManage && <option value="all">All branches (clinic-wide)</option>}
+                {!branches.length && canManage && <option value="">{branchLoading ? "Loading branches..." : "No assigned branches"}</option>}
+                {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}{branch.isMain ? " (Main)" : ""}{branch.isActive === false ? " · Inactive" : ""}</option>)}
+              </select>
+              <div className={`small mt-1 ${branches.length ? "text-success" : "text-secondary"}`} role="status">
+                {branchLoading ? "Loading branches from clinic API…" :
+                  branches.length ? `${branches.length} clinic branch${branches.length === 1 ? "" : "es"} available` :
+                  "No branches loaded — check the error above and click Refresh."}
               </div>
             </div>
+            <div className="col-sm-6 col-lg-3">
+              <label htmlFor="attendance-date" className="form-label small fw-semibold"><CalendarDays size={15} className="me-1"/> Attendance date</label>
+              <input id="attendance-date" type="date" className="form-control" value={date} onChange={(e) => setDate(e.target.value)} />
+            </div>
+            <div className="col-sm-6 col-lg-auto">
+              <button type="button" className="btn btn-outline-primary w-100" onClick={() => setDate(today)} disabled={date === today}>Today</button>
+            </div>
+            <div className="col-sm-6 col-lg">
+              <div className="attendance-info-strip"><Clock3 size={16}/> Timezone: {timezone.replace("_", " ")}</div>
+            </div>
           </div>
+        </div>
+      </section>
 
+      <nav className="attendance-tabs mb-4" aria-label="Attendance views">
+        <button type="button" className={tab === "daily" ? "active" : ""} onClick={() => setTab("daily")}><Users size={17}/> Daily register</button>
+        <button type="button" className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><History size={17}/> Attendance history</button>
+        <button type="button" className={tab === "leave" ? "active" : ""} onClick={() => setTab("leave")}><CalendarDays size={17}/> Leave & absences</button>
+      </nav>
+
+      {tab === "daily" && (
+        <>
+          {!canManage && <div className="alert alert-info d-flex gap-2 align-items-center small"><ShieldAlert size={18}/> Administrator view: You may review all staff and their leave/absence details, but only a receptionist can change attendance.</div>}
           <div className="row g-3 mb-4">
-            <SummaryCard label="Records on page" value={reportStats.recorded} icon={Users} />
-            <SummaryCard label="Present" value={reportStats.present} icon={CheckCircle2} tone="success" />
-            <SummaryCard label="Marked absent" value={reportStats.absent} icon={AlertCircle} tone="danger" />
-            <SummaryCard label="On leave" value={reportStats.leave} icon={CalendarDays} tone="warning" />
+            <MetricCard icon={Users} label={branchId === "all" ? "Staff / branch entries" : "Total staff"} value={summary?.total} color="attendance-icon-blue" />
+            <MetricCard icon={UserCheck} label="Present" value={summary?.present} color="attendance-icon-green" />
+            <MetricCard icon={LogIn} label="Currently checked in" value={summary?.checkedIn} color="attendance-icon-blue" />
+            <MetricCard icon={LogOut} label="Checked out" value={summary?.checkedOut} color="attendance-icon-green" />
+            <MetricCard icon={XCircle} label="Absent" value={summary?.absent} color="attendance-icon-red" />
+            <MetricCard icon={CalendarDays} label="On leave" value={summary?.onLeave} color="attendance-icon-orange" />
           </div>
 
-          <div className="card border-0 shadow-sm rounded-4 mb-4">
+          {canManage && <section className="card border-0 shadow-sm rounded-4 mb-4">
             <div className="card-body p-3 p-md-4">
-              <div className="d-flex align-items-center justify-content-between gap-2 mb-3">
-                <h5 className="fw-bold mb-0">Attendance records</h5>
-                <small className="text-secondary">{reportPagination.total || 0} recorded entries</small>
-              </div>
-              <div className="table-responsive">
-                <table className="table table-hover align-middle">
-                  <thead className="table-light"><tr>
-                    <th>Employee</th><th>Branch</th><th>Status</th><th>Check in</th><th>Check out</th><th>Hours</th><th>Notes</th>
-                  </tr></thead>
-                  <tbody>
-                    {reportLoading ? (
-                      <tr><td colSpan="7" className="text-center text-secondary py-5"><LoaderCircle size={22} className="me-2" />Loading attendance...</td></tr>
-                    ) : matchingReportRows.length === 0 ? (
-                      <tr><td colSpan="7" className="text-center text-secondary py-5">No recorded attendance for this selection. Unrecorded staff are not automatically marked absent.</td></tr>
-                    ) : matchingReportRows.map((record) => (
-                      <tr key={record.id}>
-                        <td><div className="fw-semibold">{fullName(record.user)}</div><small className="text-secondary">{String(record.user?.role || "").replaceAll("_", " ")}</small></td>
-                        <td><span className="d-inline-flex align-items-center gap-1"><Building2 size={14} />{record.branch?.name || "—"}</span></td>
-                        <td>{statusBadge(record.status)}</td>
-                        <td>{formatTime(record.checkInAt)}</td>
-                        <td>{formatTime(record.checkOutAt)}</td>
-                        <td>{formatMinutes(record.workedMinutes)}</td>
-                        <td className="small text-secondary">{record.notes || "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {reportPagination.totalPages > 1 && (
-                <div className="d-flex justify-content-between align-items-center mt-3">
-                  <button className="btn btn-sm btn-light border" type="button" disabled={reportPage <= 1 || reportLoading} onClick={() => setReportPage((page) => page - 1)}>Previous</button>
-                  <small className="text-secondary">Page {reportPage} of {reportPagination.totalPages}</small>
-                  <button className="btn btn-sm btn-light border" type="button" disabled={reportPage >= reportPagination.totalPages || reportLoading} onClick={() => setReportPage((page) => page + 1)}>Next</button>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="card border-0 shadow-sm rounded-4">
-            <div className="card-body p-3 p-md-4">
-              <h5 className="fw-bold mb-1">Mark absence or leave</h5>
-              <p className="text-secondary small mb-3">For staff assigned to the selected branch. Existing checked-in records cannot be overwritten.</p>
-              <form onSubmit={handleMarkAttendance} className="row g-3">
-                <div className="col-md-4">
-                  <label className="form-label fw-semibold" htmlFor="attendance-mark-branch">Branch</label>
-                  <select id="attendance-mark-branch" className="form-select" value={markBranch} onChange={(event) => { setMarkBranch(event.target.value); setMarkUser(""); }} required>
-                    <option value="">Select branch</option>
-                    {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-                  </select>
-                </div>
-                <div className="col-md-4">
-                  <label className="form-label fw-semibold" htmlFor="attendance-mark-user">Employee</label>
-                  <select id="attendance-mark-user" className="form-select" value={markUser} onChange={(event) => setMarkUser(event.target.value)} disabled={!markBranch || staffLoading} required>
-                    <option value="">{staffLoading ? "Loading employees..." : "Select employee"}</option>
-                    {staff.map((employee) => <option key={employee.id} value={employee.id}>{fullName(employee)} ({String(employee.role).replaceAll("_", " ")})</option>)}
-                  </select>
-                </div>
-                <div className="col-md-4">
-                  <label className="form-label fw-semibold" htmlFor="attendance-mark-date">Date</label>
-                  <input id="attendance-mark-date" type="date" className="form-control" value={markDate} onChange={(event) => setMarkDate(event.target.value)} required />
-                </div>
-                <div className="col-md-4">
-                  <label className="form-label fw-semibold" htmlFor="attendance-mark-status">Status</label>
-                  <select id="attendance-mark-status" className="form-select" value={markStatus} onChange={(event) => setMarkStatus(event.target.value)}>
-                    <option value="ABSENT">Absent</option>
-                    <option value="ON_LEAVE">On leave</option>
-                  </select>
-                </div>
-                <div className="col-md-8">
-                  <label className="form-label fw-semibold" htmlFor="attendance-mark-notes">Notes (optional)</label>
-                  <input id="attendance-mark-notes" className="form-control" value={markNotes} onChange={(event) => setMarkNotes(event.target.value)} maxLength={1000} placeholder="Reason or remarks" />
-                </div>
-                <div className="col-12">
-                  <button type="submit" className="btn btn-primary d-inline-flex align-items-center gap-2" disabled={busy || staffLoading || !markBranch || !markUser}>
-                    {busy ? <LoaderCircle size={17} /> : <ClipboardCheck size={17} />} Save attendance
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="card border-0 shadow-sm rounded-4 mb-4">
-            <div className="card-body p-3 p-md-4">
-              <div className="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
-                <div><h5 className="fw-bold mb-1">My attendance today</h5><p className="text-secondary small mb-0">{formatDate(`${todayInKathmandu()}T00:00:00Z`)} · Nepal time</p></div>
-                <span className={`badge rounded-pill px-3 py-2 ${activeCheckIn ? "bg-success-subtle text-success" : "bg-secondary-subtle text-secondary"}`}>
-                  {activeCheckIn ? "Currently checked in" : "Not checked in"}
-                </span>
-              </div>
-              {activeCheckIn && (
-                <div className="alert alert-success border-0 rounded-3 d-flex align-items-center gap-2">
-                  <Clock3 size={19} />
-                  <span>Working at <strong>{activeCheckIn.branch?.name || "your assigned branch"}</strong> since {formatTime(activeCheckIn.checkInAt)} · {formatMinutes(Math.floor((nowMs - new Date(activeCheckIn.checkInAt).getTime()) / 60000))} elapsed</span>
-                </div>
-              )}
+              <div className="d-flex align-items-center gap-2 mb-3"><UserRound size={18} className="text-primary"/><h5 className="fw-bold mb-0">Choose employee</h5></div>
+              <p className="text-secondary small mb-3">Select a staff member assigned to this branch, then record their attendance.</p>
               <div className="row g-3 align-items-end">
-                <div className="col-md-6">
-                  <label className="form-label fw-semibold" htmlFor="attendance-checkin-branch">Assigned branch</label>
-                  {branches.length === 1 ? (
-                    <div className="form-control bg-light d-flex align-items-center gap-2"><Building2 size={16} />{branches[0].name} (automatic)</div>
-                  ) : (
-                    <select id="attendance-checkin-branch" className="form-select" value={checkInBranch} onChange={(event) => setCheckInBranch(event.target.value)} disabled={Boolean(activeCheckIn) || branchesLoading}>
-                      <option value="">Choose branch</option>
-                      {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-                    </select>
-                  )}
-                </div>
-                {!activeCheckIn ? (
-                  <div className="col-md-6">
-                    <label className="form-label fw-semibold" htmlFor="attendance-checkin-notes">
-                      Check-in notes <span className="text-secondary fw-normal">(optional)</span>
-                    </label>
-                    <textarea
-                      id="attendance-checkin-notes"
-                      className="form-control"
-                      rows={2}
-                      maxLength={1000}
-                      value={checkInNotes}
-                      onChange={(event) => setCheckInNotes(event.target.value)}
-                      placeholder="Any updates or remarks for this shift (not required)"
-                      disabled={busy || branchesLoading}
-                    />
-                    <small className="text-secondary">{checkInNotes.length}/1000 characters · You can leave this blank.</small>
-                  </div>
-                ) : (
-                  <div className="col-md-6">
-                    <label className="form-label fw-semibold" htmlFor="attendance-checkout-notes">
-                      Check-out notes <span className="text-secondary fw-normal">(optional)</span>
-                    </label>
-                    <textarea
-                      id="attendance-checkout-notes"
-                      className="form-control"
-                      rows={2}
-                      maxLength={1000}
-                      value={checkOutNotes}
-                      onChange={(event) => setCheckOutNotes(event.target.value)}
-                      placeholder="Handover details or end-of-shift updates (not required)"
-                      disabled={busy || myLoading}
-                    />
-                    <small className="text-secondary">{checkOutNotes.length}/1000 characters · You can check out without writing anything.</small>
-                  </div>
-                )}
-                <div className="col-12 d-flex flex-wrap gap-2">
-                  <button type="button" className="btn btn-success d-inline-flex align-items-center justify-content-center gap-2 flex-fill" onClick={() => performAttendanceAction("check-in")} disabled={busy || myLoading || branchesLoading || Boolean(activeCheckIn) || !checkInBranch || myToday.some((record) => record.branchId === checkInBranch)}>
-                    {busy ? <LoaderCircle size={17} /> : <LogIn size={17} />} Check in
-                  </button>
-                  <button type="button" className="btn btn-outline-danger d-inline-flex align-items-center justify-content-center gap-2 flex-fill" onClick={() => performAttendanceAction("check-out")} disabled={busy || myLoading || !activeCheckIn}>
-                    <LogOut size={17} /> Check out
-                  </button>
-                </div>
-              </div>
-              {!branchesLoading && branches.length === 0 && <p className="text-danger small mt-3 mb-0">No active branch is assigned to your account. Ask an administrator to assign one.</p>}
-              {!activeCheckIn && myToday.some((record) => record.branchId === checkInBranch) && (
-                <p className="text-secondary small mt-3 mb-0">You already have an attendance record for this branch today. Select another assigned branch if you worked there too.</p>
-              )}
-              <p className="text-secondary small mt-3 mb-0">One check-in per employee, branch and day. You must check out before checking into a different branch.</p>
-            </div>
-          </div>
-
-          <div className="card border-0 shadow-sm rounded-4 mb-4">
-            <div className="card-body p-3 p-md-4">
-              <h5 className="fw-bold mb-3">Today's records</h5>
-              <div className="table-responsive">
-                <table className="table table-hover align-middle">
-                  <thead className="table-light"><tr><th>Branch</th><th>Status</th><th>Check in</th><th>Check out</th><th>Hours</th><th>Notes</th></tr></thead>
-                  <tbody>
-                    {myLoading ? <tr><td colSpan="6" className="text-center py-4">Loading...</td></tr> : myToday.length === 0 ? (
-                      <tr><td colSpan="6" className="text-center text-secondary py-4">No attendance recorded today.</td></tr>
-                    ) : myToday.map((record) => (
-                      <tr key={record.id}><td>{record.branch?.name || "—"}</td><td>{statusBadge(record.status)}</td><td>{formatTime(record.checkInAt)}</td><td>{formatTime(record.checkOutAt)}</td><td>{formatMinutes(record.workedMinutes)}</td><td className="small text-secondary" style={{ whiteSpace: "pre-wrap", minWidth: 140 }}>{record.notes || "—"}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <div className="card border-0 shadow-sm rounded-4">
-            <div className="card-body p-3 p-md-4">
-              <h5 className="fw-bold mb-3">My attendance history</h5>
-              <div className="row g-3 mb-3">
-                <div className="col-md-4">
-                  <label htmlFor="attendance-history-from" className="form-label fw-semibold">From</label>
-                  <input id="attendance-history-from" type="date" className="form-control" value={historyFrom} max={historyTo} onChange={(event) => setHistoryFrom(event.target.value)} />
-                </div>
-                <div className="col-md-4">
-                  <label htmlFor="attendance-history-to" className="form-label fw-semibold">To</label>
-                  <input id="attendance-history-to" type="date" className="form-control" value={historyTo} min={historyFrom} onChange={(event) => setHistoryTo(event.target.value)} />
-                </div>
-                <div className="col-md-4">
-                  <label htmlFor="attendance-history-branch" className="form-label fw-semibold">Branch</label>
-                  <select id="attendance-history-branch" className="form-select" value={historyBranch} onChange={(event) => setHistoryBranch(event.target.value)}>
-                    <option value="all">All branches</option>
-                    {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+                <div className="col-lg-5">
+                  <label htmlFor="attendance-employee" className="form-label small fw-semibold">Employee</label>
+                  <select id="attendance-employee" className="form-select" disabled={overviewLoading || !staff.length} value={selectedUserId} onChange={(e) => setSelectedUserId(e.target.value)}>
+                    <option value="">Select staff member</option>
+                    {staff.map((entry) => <option key={entry.user.id} value={entry.user.id}>{displayName(entry.user)} — {labelize(entry.user.role)}</option>)}
                   </select>
                 </div>
+                <div className="col-lg-7">
+                  {selectedEntry ? (
+                    <div className="d-flex align-items-center flex-wrap gap-2">
+                      <StatusPill status={statusFrom(selectedEntry)} />
+                      {getActions(selectedEntry, date, today, branchId).map(({ key, label, icon: Icon, cls, disabled }) => (
+                        <button key={key} type="button" className={`btn btn-sm d-inline-flex align-items-center gap-1 ${cls}`}
+                          disabled={disabled || submitting} onClick={() => openAction(key, selectedEntry)}>
+                          <Icon size={15}/>{label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : <div className="small text-secondary attendance-placeholder">Choose a user to enable attendance actions.</div>}
+                </div>
+              </div>
+            </div>
+          </section>}
+
+          <section className="card border-0 shadow-sm rounded-4">
+            <div className="card-body p-3 p-lg-4">
+              <div className="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+                <div><h5 className="fw-bold mb-1">Daily staff register</h5><p className="small text-secondary mb-0">{displayDay(date)} · {summary?.unmarked ?? 0} staff not yet marked{branchId === "all" ? " · Employees with multiple branches appear per branch" : ""}</p></div>
+                <div className="input-group" style={{maxWidth: 290}}><span className="input-group-text bg-white border-end-0"><Search size={16}/></span><input className="form-control border-start-0" type="search" placeholder="Search staff or role" aria-label="Search employees" value={search} onChange={(e) => setSearch(e.target.value)}/></div>
               </div>
               <div className="table-responsive">
-                <table className="table table-hover align-middle">
-                  <thead className="table-light"><tr><th>Date</th><th>Branch</th><th>Status</th><th>Check in</th><th>Check out</th><th>Hours</th><th>Notes</th></tr></thead>
+                <table className="table table-hover align-middle attendance-table">
+                  <thead><tr><th>Employee</th>{branchId === "all" && <th>Branch</th>}<th>Attendance</th><th>Check-in</th><th>Check-out</th><th>Work time</th><th>Notes</th><th className="text-end">Actions</th></tr></thead>
                   <tbody>
-                    {myLoading ? <tr><td colSpan="7" className="text-center py-4">Loading...</td></tr> : visibleHistory.length === 0 ? (
-                      <tr><td colSpan="7" className="text-center text-secondary py-4">No attendance found for this period.</td></tr>
-                    ) : visibleHistory.map((record) => (
-                      <tr key={record.id}><td>{formatDate(record.attendanceDate)}</td><td>{record.branch?.name || "—"}</td><td>{statusBadge(record.status)}</td><td>{formatTime(record.checkInAt)}</td><td>{formatTime(record.checkOutAt)}</td><td>{formatMinutes(record.workedMinutes)}</td><td className="small text-secondary" style={{ whiteSpace: "pre-wrap", minWidth: 140 }}>{record.notes || "—"}</td></tr>
-                    ))}
+                    {overviewLoading ? <tr><td colSpan={branchId === "all" ? 8 : 7} className="text-center py-5"><LoaderCircle size={26} className="attendance-spin text-primary mb-2"/><div className="small text-secondary">Loading staff attendance…</div></td></tr> :
+                      visibleStaff.length === 0 ? <tr><td colSpan={branchId === "all" ? 8 : 7} className="text-center py-5"><Users className="text-secondary mb-2" size={32}/><div className="fw-semibold">No employees found</div><div className="small text-secondary">Check the selected branch or search.</div></td></tr> :
+                      visibleStaff.map((entry) => {
+                        const record = entry.attendance;
+                        return (
+                          <tr key={`${entry.user.id}:${entry.branch?.id || branchId}`}>
+                            <td><div className="d-flex align-items-center gap-2"><span className="attendance-avatar"><UserRound size={17}/></span><div><div className="fw-semibold">{displayName(entry.user)}</div><small className="text-secondary">{labelize(entry.user.role)}</small></div></div></td>
+                            {branchId === "all" && <td>{entry.branch?.name || "—"}</td>}
+                            <td><StatusPill status={statusFrom(entry)}/>{entry.activeCheckIn?.branchId !== (entry.branch?.id || branchId) && entry.activeCheckIn && <small className="d-block text-warning-emphasis mt-1">Active at {entry.activeCheckIn.branch?.name}</small>}</td>
+                            <td>{displayTime(record?.checkInAt, timezone)}</td>
+                            <td>{displayTime(record?.checkOutAt, timezone)}</td>
+                            <td>{displayDuration(record?.workedMinutes)}</td>
+                            <td><span className="attendance-note" title={record?.notes || ""}>{record?.notes || "—"}</span></td>
+                            <td className="text-end"><div className="d-flex align-items-center justify-content-end flex-wrap gap-1">
+                              {canManage && getActions(entry, date, today, branchId).map(({ key, label, icon: Icon, disabled, cls }) => (
+                                <button key={key} type="button" title={label} aria-label={`${label} ${displayName(entry.user)}`}
+                                  className={`btn btn-sm ${cls}`} disabled={disabled || submitting}
+                                  onClick={() => openAction(key, entry)}><Icon size={15}/></button>
+                              ))}
+                              <button type="button" className="btn btn-sm btn-light border d-inline-flex align-items-center gap-1"
+                                onClick={() => setDetailRecord({ record: entry.attendance, person: entry.user, branch: entry.branch, date })}
+                                title="View full attendance details"><Eye size={15}/>{!canManage && " Details"}</button>
+                            </div></td>
+                          </tr>
+                        );
+                      })
+                    }
                   </tbody>
                 </table>
               </div>
+              <div className="small text-secondary mt-2">Unmarked does not mean absent. Only receptionists can mark absence or leave. Check-in and check-out times are recorded by the server.</div>
             </div>
-          </div>
+          </section>
         </>
       )}
-      <style>{`.attendance-spin { animation: attendance-rotate 1s linear infinite; } @keyframes attendance-rotate { to { transform: rotate(360deg); } }`}</style>
+
+      {(tab === "history" || tab === "leave") && (
+        <section className="card border-0 shadow-sm rounded-4">
+          <div className="card-body p-3 p-lg-4">
+            <div className="d-flex justify-content-between flex-wrap align-items-start gap-3 mb-3">
+              <div>
+                <h5 className="fw-bold mb-1">{tab === "leave" ? "Staff leave & absence register" : "Attendance history"}</h5>
+                <p className="small text-secondary mb-0">{tab === "leave"
+                  ? "Review employee leave, absence dates, reasons, and who recorded each entry. View-only for administrators."
+                  : "Review previous shifts, absences, leave, notes and worked hours."}</p>
+              </div>
+              <button type="button" className="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-2"
+                disabled={!historyRows.length} onClick={() => exportCsv(historyRows, `${tab}-${historyFrom}-to-${historyTo}-page-${historyPagination.page}.csv`, timezone)}>
+                <Download size={16}/> Export current page
+              </button>
+            </div>
+            <div className="row g-3 mb-4">
+              <MetricCard icon={CalendarDays} label="Leave days / entries" value={historyStatusCounts.ON_LEAVE || 0} color="attendance-icon-orange"/>
+              <MetricCard icon={XCircle} label="Absent days / entries" value={historyStatusCounts.ABSENT || 0} color="attendance-icon-red"/>
+              <MetricCard icon={UserCheck} label="Present entries" value={historyStatusCounts.PRESENT || 0} color="attendance-icon-green"/>
+            </div>
+            <div className="row g-2 align-items-end mb-4">
+              <div className="col-sm-6 col-lg-2"><label className="form-label fw-semibold small">From date</label><input type="date" className="form-control" value={historyFrom} onChange={(e) => setHistoryFrom(e.target.value)}/></div>
+              <div className="col-sm-6 col-lg-2"><label className="form-label fw-semibold small">To date</label><input type="date" className="form-control" value={historyTo} onChange={(e) => setHistoryTo(e.target.value)}/></div>
+              <div className="col-sm-6 col-lg-3"><label className="form-label fw-semibold small">Employee</label><select className="form-select" value={historyUserId} onChange={(e) => setHistoryUserId(e.target.value)}>
+                <option value="">All employees</option>{historyStaffUsers.map((user) => <option key={user.id} value={user.id}>{displayName(user)}</option>)}
+              </select></div>
+              {tab === "leave" && <div className="col-sm-6 col-lg-3"><label className="form-label fw-semibold small">Record type</label><select className="form-select" value={leaveStatus} onChange={(e) => setLeaveStatus(e.target.value)}>
+                <option value="LEAVE_OR_ABSENT">All leave & absences</option>
+                <option value="ON_LEAVE">On leave only</option>
+                <option value="ABSENT">Absent only</option>
+              </select></div>}
+              <div className="col-sm-6 col-lg-auto"><button type="button" className="btn btn-primary w-100 d-inline-flex align-items-center justify-content-center gap-2" disabled={historyLoading || !branchId || historyFrom > historyTo} onClick={() => loadHistory(1)}><Filter size={16}/> Apply filters</button></div>
+            </div>
+            <div className="table-responsive"><table className="table table-hover align-middle attendance-table">
+              <thead><tr><th>Date</th><th>Employee</th><th>Branch</th><th>Status</th><th>Check-in</th><th>Check-out</th><th>Duration</th><th>Recorded by</th><th>Reason / notes</th><th>Details</th></tr></thead>
+              <tbody>{historyLoading ? <tr><td colSpan="10" className="text-center py-5"><LoaderCircle className="attendance-spin text-primary" size={26}/><div className="small text-secondary mt-2">Loading records…</div></td></tr> :
+                historyRows.length === 0 ? <tr><td colSpan="10" className="text-center py-5"><History size={32} className="text-secondary mb-2"/><div>No records for these filters.</div></td></tr> :
+                historyRows.map((row) => <tr key={row.id}>
+                  <td className="fw-semibold">{displayDay(row.attendanceDate)}</td>
+                  <td><strong>{displayName(row.user)}</strong><small className="d-block text-secondary">{labelize(row.user?.role)}</small></td>
+                  <td>{row.branch?.name || "—"}</td>
+                  <td><StatusPill status={statusFrom({ attendance: row })}/></td>
+                  <td>{displayTime(row.checkInAt, timezone)}</td><td>{displayTime(row.checkOutAt, timezone)}</td>
+                  <td>{displayDuration(row.workedMinutes)}</td>
+                  <td>{row.recordedBy ? displayName(row.recordedBy) : "—"}</td>
+                  <td><span className={tab === "leave" ? "attendance-full-note" : "attendance-note"} title={row.notes || ""}>{row.notes || "—"}</span></td>
+                  <td><button className="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-1" type="button"
+                    onClick={() => setDetailRecord({ record: row, person: row.user, branch: row.branch, date: row.attendanceDate })}><Eye size={15}/> View</button></td>
+                </tr>)}
+              </tbody>
+            </table></div>
+            <div className="d-flex justify-content-between align-items-center flex-wrap gap-3 mt-3">
+              <span className="small text-secondary">{historyPagination.total || 0} records · Page {historyPagination.page || 1} of {Math.max(1, historyPagination.totalPages || 1)}</span>
+              <div className="d-flex gap-2"><button className="btn btn-light border btn-sm" type="button" disabled={historyLoading || (historyPagination.page || 1) <= 1} onClick={() => loadHistory(historyPagination.page - 1)}>Previous</button>
+                <button className="btn btn-light border btn-sm d-inline-flex align-items-center gap-1" type="button" disabled={historyLoading || (historyPagination.page || 1) >= (historyPagination.totalPages || 1)} onClick={() => loadHistory(historyPagination.page + 1)}>Next <ArrowRight size={14}/></button></div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {detailRecord && <AttendanceRecordDetailsModal record={detailRecord.record} person={detailRecord.person}
+        branch={detailRecord.branch} selectedDate={detailRecord.date} timezone={timezone} onClose={() => setDetailRecord(null)}/>}
+      {canManage && modalAction && <AttendanceActionModal key={`${modalAction.entry.user.id}:${modalAction.kind}`} action={modalAction} selectedDate={date} today={today} onClose={() => setModalAction(null)} submitting={submitting} onConfirm={confirmAction}/>}
+      <style>{ATTENDANCE_STYLES}</style>
     </div>
   );
 }
 
-export default Attendance;
+const ATTENDANCE_STYLES = `
+.attendance-page { color:#1e293b; padding-bottom:25px; }
+.attendance-role-chip { display:inline-flex;align-items:center;gap:6px;background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;padding:8px 11px;border-radius:100px;font-size:12px;font-weight:650; }
+.attendance-page .card { background:#fff; }
+.attendance-info-strip { display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:8px;background:#f8fafc;border:1px solid #e2e8f0;color:#64748b;font-size:12px;min-height:39px; }
+.attendance-tabs { display:inline-flex;gap:5px;background:#eaf0f7;border-radius:12px;padding:5px;border:1px solid #e2e8f0; }
+.attendance-tabs button { border:0;background:transparent;color:#64748b;border-radius:9px;padding:10px 17px;display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700; }
+.attendance-tabs button.active { background:white;color:#1d4ed8;box-shadow:0 2px 8px #0f172a16; }
+.attendance-metric { border-radius:15px;border:1px solid #e2e8f0;box-shadow:0 2px 10px #0f172a06;background:white;padding:17px;display:flex;flex-direction:column;gap:8px; }
+.attendance-metric-icon { width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:11px; }
+.attendance-icon-blue { background:#eff6ff;color:#2563eb; }
+.attendance-icon-green { background:#ecfdf5;color:#059669; }
+.attendance-icon-red { background:#fef2f2;color:#dc2626; }
+.attendance-icon-orange { background:#fffbeb;color:#d97706; }
+.attendance-metric-number { font-size:28px;line-height:1;font-weight:800;color:#0f172a; }
+.attendance-metric-label { color:#64748b;font-size:12px;font-weight:600; }
+.attendance-page .attendance-table { --bs-table-bg:transparent;font-size:12px;white-space:nowrap; }
+.attendance-table thead th { background:#f8fafc;color:#64748b;font-weight:700;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;padding:14px 11px; }
+.attendance-table tbody td { padding:13px 11px;vertical-align:middle; }
+.attendance-table button { min-width:29px;display:inline-flex;justify-content:center;align-items:center; }
+.attendance-avatar { width:35px;height:35px;border-radius:11px;background:#eff6ff;color:#2563eb;display:flex;align-items:center;justify-content:center;flex-shrink:0; }
+.attendance-note { display:inline-block;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#64748b;vertical-align:middle; }
+.attendance-full-note { display:block;min-width:160px;max-width:350px;white-space:pre-wrap;overflow-wrap:anywhere;color:#475569;line-height:1.55; }
+.attendance-detail-dialog { width:min(600px,100%);max-height:92vh;overflow:auto; }
+.attendance-detail-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;padding:16px;border-radius:12px;border:1px solid #e2e8f0; }
+.attendance-detail-grid span { color:#64748b;font-size:11px;display:block; }
+.attendance-detail-grid strong { font-weight:650;font-size:13px;overflow-wrap:anywhere; }
+.attendance-detail-notes { background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin-top:15px;padding:15px; }
+.attendance-detail-notes p { white-space:pre-wrap;overflow-wrap:anywhere;color:#334155;font-size:13px; }
+@media(max-width:520px) { .attendance-detail-grid {grid-template-columns:1fr;} }
+.attendance-placeholder { border:1px dashed #cbd5e1;border-radius:10px;padding:10px 14px; }
+.attendance-overlay { position:fixed;inset:0;background:#0f172ab8;display:flex;align-items:center;justify-content:center;padding:16px;z-index:2100; }
+.attendance-dialog { width:min(480px,100%);background:white;border-radius:18px;padding:24px;box-shadow:0 24px 75px #0004; }
+.attendance-dialog-summary { border:1px solid #e2e8f0;background:#f8fafc;border-radius:11px;padding:12px;display:flex;align-items:center;gap:12px; }
+.attendance-dialog-summary small { display:block;color:#64748b;margin-top:3px; }
+.attendance-spin { animation:attendance-spin-keyframe .85s linear infinite; }
+@keyframes attendance-spin-keyframe { to {transform:rotate(360deg);} }
+@media(max-width:560px) { .attendance-tabs { width:100%; } .attendance-tabs button { flex:1;justify-content:center;padding:10px 7px;font-size:12px; } .attendance-dialog { padding:17px; } }
+`;

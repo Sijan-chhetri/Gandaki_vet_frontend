@@ -1,25 +1,33 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { createPortal } from "react-dom";
 import {
   AlertCircle,
   Building2,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
+  ClipboardList,
   Clock3,
   Download,
   Edit3,
   Eye,
   Filter,
   FileText,
+  History,
+  Pill,
+  ReceiptText,
   LoaderCircle,
   PawPrint,
   Plus,
   Printer,
   RefreshCw,
   Search,
+  Syringe,
   Stethoscope,
   Trash2,
   UserRound,
+  X,
 } from "lucide-react";
 
 import apiRequest from "../../services/api";
@@ -27,8 +35,14 @@ import appointmentService from "../../services/appointment.service";
 import patientService from "../../services/patient.service";
 import prescriptionService from "../../services/prescription.service";
 import serviceService from "../../services/service.service";
+import speciesService from "../../services/species.service";
 import vaccinationService from "../../services/vaccination.service.js";
 import ServiceMultiSelect from "../../components/ServiceMultiSelect";
+
+// Use the general appointments endpoint filtered by petId
+const PATIENT_HISTORY_API_PATH = (petId) =>
+  `/appointments`;
+const PATIENT_HISTORY_PAGE_SIZE = 20;
 
 const APPOINTMENT_TYPES = [
   { value: "CONSULTATION", label: "Consultation" },
@@ -53,6 +67,78 @@ const APPOINTMENT_STATUSES = [
   "NO_SHOW",
 ];
 
+// Quick date buttons filter the already fetched appointment list without API calls.
+const APPOINTMENT_DATE_FILTERS = [
+  { value: "all", label: "All Dates" },
+  { value: "today", label: "Today" },
+  { value: "tomorrow", label: "Tomorrow" },
+  { value: "this_week", label: "This Week" },
+  { value: "this_month", label: "This Month" },
+];
+
+const APPOINTMENTS_PAGE_SIZE = 20;
+const APPOINTMENTS_FETCH_PAGE_SIZE = 100;
+const MAX_APPOINTMENTS_FETCH_PAGES = 300;
+
+const EMPTY_APPOINTMENT_FILTERS = {
+  search: "",
+  status: "",
+  type: "",
+  date: "",
+  datePreset: "all",
+};
+
+// Build local calendar-day ranges once per selected view.
+// These are used for client-side filtering ONLY, not API requests.
+function getAppointmentDateRange({ datePreset = "all", date = "" }, now = new Date()) {
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const day = now.getDate();
+  let start;
+  let endExclusive;
+
+  switch (datePreset) {
+    case "today":
+      start = new Date(year, month, day);
+      endExclusive = new Date(year, month, day + 1);
+      break;
+    case "tomorrow":
+      start = new Date(year, month, day + 1);
+      endExclusive = new Date(year, month, day + 2);
+      break;
+    case "this_week": {
+      // ISO-style calendar week: Monday through Sunday.
+      const mondayOffset = (now.getDay() + 6) % 7;
+      start = new Date(year, month, day - mondayOffset);
+      endExclusive = new Date(
+        start.getFullYear(),
+        start.getMonth(),
+        start.getDate() + 7,
+      );
+      break;
+    }
+    case "this_month":
+      start = new Date(year, month, 1);
+      endExclusive = new Date(year, month + 1, 1);
+      break;
+    case "custom": {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+      const [selectedYear, selectedMonth, selectedDay] = date.split("-").map(Number);
+      start = new Date(selectedYear, selectedMonth - 1, selectedDay);
+      if (formatDateInput(start) !== date) return null;
+      endExclusive = new Date(selectedYear, selectedMonth - 1, selectedDay + 1);
+      break;
+    }
+    default:
+      return null;
+  }
+
+  return {
+    dateFrom: start.toISOString(),
+    dateTo: new Date(endExclusive.getTime() - 1).toISOString(),
+  };
+}
+
 const initialFormData = {
   branchId: "",
   mode: "SCHEDULED",
@@ -62,8 +148,6 @@ const initialFormData = {
   serviceIds: [],
   type: "CONSULTATION",
   scheduledDate: "",
-  scheduledTime: "09:00",
-  durationMin: "30",
   walkInOwnerName: "",
   walkInOwnerPhone: "",
   walkInOwnerAddress: "",
@@ -83,13 +167,6 @@ const initialFormData = {
   vaccineRoute: "Subcutaneous",
   vaccineSite: "",
   vaccineNotes: "",
-};
-
-const initialPagination = {
-  page: 1,
-  limit: 20,
-  total: 0,
-  totalPages: 1,
 };
 
 const initialStats = {
@@ -132,6 +209,42 @@ function extractArray(result, keys = []) {
   ];
 
   return candidates.find((value) => Array.isArray(value)) || [];
+}
+
+// Species are shared across the clinic. The walk-in API stores the NAME,
+// not the species ID, so keep names as the values shown/submitted.
+function normalizeSpeciesOptions(items = []) {
+  const names = new Map();
+  for (const item of items) {
+    const name = (typeof item === "string" ? item : item?.name || "")
+      .trim()
+      .replace(/\s+/g, " ");
+    if (!name) continue;
+    const key = name.toLocaleLowerCase();
+    if (!names.has(key)) {
+      names.set(key, {
+        id: typeof item === "object" && item ? item.id : undefined,
+        name,
+      });
+    }
+  }
+  return [...names.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function matchingSpeciesName(items, name) {
+  const needle = String(name || "").trim().toLocaleLowerCase();
+  return items.find((item) => item.name.toLocaleLowerCase() === needle)?.name || "";
+}
+
+function getCreatedSpeciesResult(result) {
+  const payload =
+    result?.data?.data?.species ||
+    result?.data?.species ||
+    result?.species ||
+    result?.data?.data ||
+    result?.data ||
+    result;
+  return payload && typeof payload === "object" ? payload : { name: payload };
 }
 
 function getStoredUser() {
@@ -186,6 +299,11 @@ function Appointments() {
   const [doctorsReloadKey, setDoctorsReloadKey] = useState(0);
   const [services, setServices] = useState([]);
   const [vaccines, setVaccines] = useState([]);
+  const [speciesOptions, setSpeciesOptions] = useState([]);
+  const [speciesLoading, setSpeciesLoading] = useState(true);
+  const [speciesLoadError, setSpeciesLoadError] = useState("");
+  const [speciesCreateError, setSpeciesCreateError] = useState("");
+  const [speciesCreating, setSpeciesCreating] = useState(false);
   const [branches, setBranches] = useState(() => readStoredBranches());
   const [branchesLoading, setBranchesLoading] = useState(true);
   const [branchesError, setBranchesError] = useState("");
@@ -270,16 +388,11 @@ function Appointments() {
   }, [selectedBranchId, availableBranches]);
 
   const [stats, setStats] = useState(initialStats);
-  const [pagination, setPagination] = useState(initialPagination);
+  const [currentPage, setCurrentPage] = useState(1);
+  const appointmentsRequestId = useRef(0);
 
-  const [filters, setFilters] = useState({
-    search: "",
-    status: "",
-    type: "",
-    date: "",
-  });
-
-  const [appliedFilters, setAppliedFilters] = useState(filters);
+  const [filters, setFilters] = useState({ ...EMPTY_APPOINTMENT_FILTERS });
+  const [appliedFilters, setAppliedFilters] = useState({ ...EMPTY_APPOINTMENT_FILTERS });
 
   const [showForm, setShowForm] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
@@ -294,6 +407,68 @@ function Appointments() {
   const [fieldErrors, setFieldErrors] = useState({});
   const [selectedServices, setSelectedServices] = useState([]);
 
+  // Shared species endpoints also used by Patients.jsx:
+  // GET /pets/species and POST /pets/species with { name }.
+  const loadSpecies = useCallback(async () => {
+    setSpeciesLoading(true);
+    setSpeciesLoadError("");
+    try {
+      const response = await speciesService.getSpecies();
+      const received = extractArray(response, ["species", "items"]);
+      // Merge so an older GET cannot hide an item newly added during the request.
+      setSpeciesOptions((previous) =>
+        normalizeSpeciesOptions([...previous, ...received]),
+      );
+    } catch (requestError) {
+      setSpeciesLoadError(
+        requestError?.message || "Unable to load species. Please try again.",
+      );
+    } finally {
+      setSpeciesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSpecies();
+  }, [loadSpecies]);
+
+  async function addSpeciesAndSelect(inputName) {
+    const name = String(inputName || "").trim().replace(/\s+/g, " ");
+    if (!name) return false;
+    const alreadyExists = matchingSpeciesName(speciesOptions, name);
+    if (alreadyExists) {
+      handleFormChange({
+        target: { name: "walkInPetSpecies", value: alreadyExists },
+      });
+      setSpeciesCreateError("");
+      return true;
+    }
+    if (speciesCreating) return false;
+
+    setSpeciesCreating(true);
+    setSpeciesCreateError("");
+    try {
+      const response = await speciesService.createSpecies({ name });
+      const created = getCreatedSpeciesResult(response);
+      const savedName = String(created?.name || name).trim().replace(/\s+/g, " ");
+      setSpeciesOptions((previous) =>
+        normalizeSpeciesOptions([...previous, { id: created?.id, name: savedName }]),
+      );
+      handleFormChange({
+        target: { name: "walkInPetSpecies", value: savedName },
+      });
+      return true;
+    } catch (requestError) {
+      setSpeciesCreateError(
+        requestError?.message || "Could not add species. Please retry.",
+      );
+      // A duplicate might have been added by another staff member. Allow retry.
+      return false;
+    } finally {
+      setSpeciesCreating(false);
+    }
+  }
+
   // Registered patient search fields
   const [patientSearch, setPatientSearch] = useState("");
   const [ownerSearch, setOwnerSearch] = useState("");
@@ -306,6 +481,9 @@ function Appointments() {
   const [submitting, setSubmitting] = useState(false);
   const [actionLoading, setActionLoading] = useState("");
   const [prescriptionPreview, setPrescriptionPreview] = useState(null);
+  const [consentPreview, setConsentPreview] = useState(null);
+  const [consentLoading, setConsentLoading] = useState(false);
+  const [patientHistorySubject, setPatientHistorySubject] = useState(null);
   const [error, setError] = useState("");
 
   const selectedPatient = useMemo(
@@ -430,15 +608,10 @@ function Appointments() {
     const nextServices = services;
     setSelectedServices(nextServices);
 
-    const totalDuration = nextServices.reduce(
-      (total, service) => total + Number(service.durationMin || 0),
-      0,
-    );
-
+    // Services no longer determine an appointment duration.
     setFormData((previous) => ({
       ...previous,
       serviceIds: nextServices.map((service) => service.id),
-      durationMin: totalDuration > 0 ? String(totalDuration) : "30",
     }));
 
     setFieldErrors((previous) => ({
@@ -449,8 +622,13 @@ function Appointments() {
     setFormError("");
   };
 
+  // Load the complete appointment dataset for the current branch and advanced
+  // filters. Quick-date choices are deliberately NOT dependencies or API params.
+  // That allows instant switching among dates, including appointments that
+  // would otherwise fall on a different server-pagination page.
   const loadAppointments = useCallback(
-    async (page = 1) => {
+    async (desiredPage = 1) => {
+      const requestId = ++appointmentsRequestId.current;
       try {
         setLoading(true);
         setError("");
@@ -461,64 +639,92 @@ function Appointments() {
             !availableBranches.some((branch) => branch.id === selectedBranchId))
         ) {
           setAppointments([]);
-          setPagination(initialPagination);
-          if (!branchesError)
+          setCurrentPage(1);
+          if (!branchesError) {
             setError("Select an accessible branch to view appointments.");
+          }
           return;
         }
 
         const query = {
           branchId: selectedBranchId,
-          page,
-          limit: pagination.limit,
+          limit: APPOINTMENTS_FETCH_PAGE_SIZE,
           search: appliedFilters.search,
           status: appliedFilters.status,
           type: appliedFilters.type,
         };
-
-        if (appliedFilters.date) {
-          query.dateFrom = `${appliedFilters.date}T00:00:00.000`;
-          query.dateTo = `${appliedFilters.date}T23:59:59.999`;
-        }
-
         if (isDoctor && currentUser?.id) {
           query.veterinarianId = currentUser.id;
         }
 
-        const result = await appointmentService.getAppointments(query);
+        const allAppointments = [];
+        const seenIds = new Set();
+        let fetchedRows = 0;
+        let finished = false;
+        for (let page = 1; page <= MAX_APPOINTMENTS_FETCH_PAGES; page += 1) {
+          const result = await appointmentService.getAppointments({ ...query, page });
+          if (requestId !== appointmentsRequestId.current) return;
 
-        const receivedAppointments = extractArray(result, [
-          "appointments",
-        ]).filter(
-          (appointment) =>
-            selectedBranchId === "all" ||
-            appointment.branchId === selectedBranchId,
-        );
+          const batch = extractArray(result, ["appointments"]);
+          fetchedRows += batch.length;
+          for (const appointment of batch) {
+            // Keep the existing clinic access + doctor rules.
+            if (selectedBranchId !== "all" && appointment.branchId !== selectedBranchId) {
+              continue;
+            }
+            if (
+              isDoctor && currentUser?.id &&
+              appointment.veterinarianId !== currentUser.id &&
+              appointment.veterinarian?.id !== currentUser.id
+            ) {
+              continue;
+            }
+            if (appointment.id && seenIds.has(appointment.id)) continue;
+            if (appointment.id) seenIds.add(appointment.id);
+            allAppointments.push(appointment);
+          }
 
-        setAppointments(
-          isDoctor && currentUser?.id
-            ? receivedAppointments.filter(
-                (appointment) =>
-                  appointment.veterinarianId === currentUser.id ||
-                  appointment.veterinarian?.id === currentUser.id,
-              )
-            : receivedAppointments,
-        );
+          const pageInfo = result?.pagination || result?.data?.pagination || {};
+          const reportedPages = Number(
+            pageInfo.totalPages ?? pageInfo.pages ??
+            result?.totalPages ?? result?.data?.totalPages,
+          );
+          const reportedTotal = Number(pageInfo.total ?? result?.total);
 
-        setPagination({
-          ...initialPagination,
-          ...(result?.pagination || result?.data?.pagination || {}),
-          page,
-        });
+          if (Number.isFinite(reportedPages) && reportedPages > 0) {
+            finished = page >= reportedPages;
+          } else if (Number.isFinite(reportedTotal) && reportedTotal >= 0) {
+            // Count actual returned rows, since some APIs cap requested limit.
+            finished = fetchedRows >= reportedTotal;
+          } else {
+            finished = batch.length < APPOINTMENTS_FETCH_PAGE_SIZE;
+          }
+          if (batch.length === 0) finished = true;
+          if (finished) break;
+        }
+
+        if (requestId !== appointmentsRequestId.current) return;
+        if (!finished) {
+          throw new Error(
+            "There are too many appointments to load for instant date filtering. " +
+            "Please narrow the search or branch and retry.",
+          );
+        }
+        setAppointments(allAppointments);
+        setCurrentPage(Math.max(1, Number(desiredPage) || 1));
       } catch (requestError) {
+        if (requestId !== appointmentsRequestId.current) return;
+        setAppointments([]);
+        setCurrentPage(1);
         setError(requestError.message || "Unable to retrieve appointments.");
       } finally {
-        setLoading(false);
+        if (requestId === appointmentsRequestId.current) setLoading(false);
       }
     },
     [
-      appliedFilters,
-      pagination.limit,
+      appliedFilters.search,
+      appliedFilters.status,
+      appliedFilters.type,
       isDoctor,
       currentUser?.id,
       selectedBranchId,
@@ -527,6 +733,37 @@ function Appointments() {
       branchesError,
     ],
   );
+
+  // Pure in-memory filtering: no loading state and no network activity when
+  // a quick date is clicked. A walk-in with no scheduledAt uses its visit date.
+  const filteredAppointments = useMemo(() => {
+    const range = getAppointmentDateRange(appliedFilters);
+    if (!range) return appointments;
+    const from = new Date(range.dateFrom).getTime();
+    const to = new Date(range.dateTo).getTime();
+    return appointments.filter((appointment) => {
+      const value = appointment.scheduledAt || appointment.createdAt;
+      if (!value) return false;
+      const time = new Date(value).getTime();
+      return Number.isFinite(time) && time >= from && time <= to;
+    });
+  }, [appointments, appliedFilters.datePreset, appliedFilters.date]);
+
+  const pagination = useMemo(() => {
+    const total = filteredAppointments.length;
+    const totalPages = Math.max(1, Math.ceil(total / APPOINTMENTS_PAGE_SIZE));
+    return {
+      page: Math.min(currentPage, totalPages),
+      limit: APPOINTMENTS_PAGE_SIZE,
+      total,
+      totalPages,
+    };
+  }, [currentPage, filteredAppointments.length]);
+
+  const visibleAppointments = useMemo(() => {
+    const start = (pagination.page - 1) * pagination.limit;
+    return filteredAppointments.slice(start, start + pagination.limit);
+  }, [filteredAppointments, pagination.page, pagination.limit]);
 
   const loadStats = useCallback(async () => {
     try {
@@ -708,8 +945,7 @@ function Appointments() {
     loadAppointments(1);
   }, [loadAppointments]);
 
-  // Keep the Vaccination service and duration synchronized after services load
-  // or when an admin changes the configured service duration in the database.
+  // Keep the vaccination service selected after services load.
   useEffect(() => {
     if (formData.type !== "VACCINATION") return;
 
@@ -717,14 +953,12 @@ function Appointments() {
     if (!vaccinationService) return;
 
     const nextServiceId = vaccinationService.id || "";
-    const nextDuration = String(vaccinationService.durationMin || 30);
     setSelectedServices([vaccinationService]);
     setFormData((previous) => {
       if (
         previous.type === "VACCINATION" &&
         previous.serviceIds?.length === 1 &&
-        previous.serviceIds[0] === nextServiceId &&
-        previous.durationMin === nextDuration
+        previous.serviceIds[0] === nextServiceId
       ) {
         return previous;
       }
@@ -732,7 +966,6 @@ function Appointments() {
       return {
         ...previous,
         serviceIds: [nextServiceId],
-        durationMin: nextDuration,
       };
     });
   }, [services, formData.type]);
@@ -743,28 +976,34 @@ function Appointments() {
     setFilters((previous) => ({
       ...previous,
       [name]: value,
+      // Choosing a calendar date overrides a quick-date preset.
+      ...(name === "date" ? { datePreset: value ? "custom" : "all" } : {}),
     }));
   }
 
   function applyFilters(event) {
     event.preventDefault();
-
+    setCurrentPage(1);
     setAppliedFilters({
       ...filters,
       search: filters.search.trim(),
     });
   }
 
-  function clearFilters() {
-    const emptyFilters = {
-      search: "",
-      status: "",
-      type: "",
-      date: "",
-    };
+  function applyQuickDateFilter(datePreset) {
+    if (!APPOINTMENT_DATE_FILTERS.some((item) => item.value === datePreset)) return;
+    // Only update local date selection; do not request appointments again.
+    // Retain existing applied search/status/type filters. Unsaved text input
+    // can still be applied separately with the Search button.
+    setFilters((previous) => ({ ...previous, date: "", datePreset }));
+    setAppliedFilters((previous) => ({ ...previous, date: "", datePreset }));
+    setCurrentPage(1);
+  }
 
-    setFilters(emptyFilters);
-    setAppliedFilters(emptyFilters);
+  function clearFilters() {
+    setFilters({ ...EMPTY_APPOINTMENT_FILTERS });
+    setAppliedFilters({ ...EMPTY_APPOINTMENT_FILTERS });
+    setCurrentPage(1);
   }
 
   const handleFormChange = (e) => {
@@ -776,6 +1015,7 @@ function Appointments() {
     }));
 
     setFormError("");
+    if (name === "walkInPetSpecies") setSpeciesCreateError("");
 
     if (name === "branchId") {
       // A real assigned branch, never "all" or an unknown value.
@@ -830,7 +1070,6 @@ function Appointments() {
 
           serviceIds: [vaccinationService.id],
 
-          durationMin: String(vaccinationService.durationMin || 30),
 
           veterinarianId: "",
         }));
@@ -851,7 +1090,6 @@ function Appointments() {
         ...previous,
         type: value,
         serviceIds: [],
-        durationMin: "30",
       }));
 
       return;
@@ -890,8 +1128,7 @@ function Appointments() {
 
   // ADD openAddForm function
   function openAddForm() {
-    const now = new Date();
-    const date = now.toISOString().slice(0, 10);
+    const date = formatDateInput(new Date());
 
     setEditingAppointment(null);
     setSelectedServices([]);
@@ -904,6 +1141,7 @@ function Appointments() {
     });
     setFieldErrors({});
     setFormError("");
+    setSpeciesCreateError("");
     setShowForm(true);
   }
 
@@ -924,9 +1162,9 @@ function Appointments() {
       veterinarianId: appointment.veterinarianId || "",
       serviceIds: services.map((s) => s.id),
       type: appointment.type || "CONSULTATION",
-      scheduledDate: formatDateInput(scheduledAt),
-      scheduledTime: formatTimeInput(scheduledAt),
-      durationMin: String(appointment.durationMin || 30),
+      scheduledDate: Number.isNaN(scheduledAt.getTime())
+        ? ""
+        : formatDateInput(scheduledAt),
       walkInOwnerName: appointment.walkInOwnerName || "",
       walkInOwnerPhone: appointment.walkInOwnerPhone || "",
       walkInOwnerAddress: appointment.walkInOwnerAddress || "",
@@ -971,6 +1209,7 @@ function Appointments() {
 
     setFieldErrors({});
     setFormError("");
+    setSpeciesCreateError("");
     setShowDetails(false);
     setShowForm(true);
   }
@@ -1023,6 +1262,17 @@ function Appointments() {
 
       if (!formData.walkInPetSpecies.trim()) {
         errors.walkInPetSpecies = "Walk-in pet species is required.";
+      } else if (
+        !matchingSpeciesName(speciesOptions, formData.walkInPetSpecies) &&
+        // Retain historical walk-in names when editing older records.
+        !(
+          editingAppointment?.mode === "WALK_IN" &&
+          editingAppointment.walkInPetSpecies?.trim().toLocaleLowerCase() ===
+            formData.walkInPetSpecies.trim().toLocaleLowerCase()
+        )
+      ) {
+        errors.walkInPetSpecies =
+          "Choose a species from the list or click Add species to save it first.";
       }
 
       if (
@@ -1046,8 +1296,8 @@ function Appointments() {
         errors.ownerId = "The selected patient has no owner.";
       }
 
-      if (!formData.scheduledDate || !formData.scheduledTime) {
-        errors.scheduledAt = "Appointment date and time are required.";
+      if (!formData.scheduledDate) {
+        errors.scheduledDate = "Appointment date is required.";
       }
     }
 
@@ -1064,12 +1314,6 @@ function Appointments() {
     // Validate at least one service is selected
     if (selectedServices.length === 0) {
       errors.serviceIds = "Please select at least one service.";
-    }
-
-    const duration = Number(formData.durationMin);
-
-    if (!Number.isInteger(duration) || duration < 5 || duration > 480) {
-      errors.durationMin = "Duration must be between 5 and 480 minutes.";
     }
 
     return errors;
@@ -1100,7 +1344,10 @@ function Appointments() {
       veterinarianId: formData.veterinarianId || null,
       serviceIds: selectedServices.map((s) => s.id),
       type: formData.type,
-      durationMin: Number(formData.durationMin),
+      // Compatibility with the existing API/Prisma schema, where durationMin
+      // is required. No duration is selected, displayed or validated in the UI.
+      // Remove this fallback once the backend makes durationMin optional.
+      durationMin: editingAppointment?.durationMin || 30,
       reason: formData.reason.trim() || null,
       symptoms: formData.symptoms.trim() || null,
       notes: formData.notes.trim() || null,
@@ -1115,7 +1362,9 @@ function Appointments() {
         walkInOwnerPhone: formData.walkInOwnerPhone.trim(),
         walkInOwnerAddress: formData.walkInOwnerAddress.trim() || null,
         walkInPetName: formData.walkInPetName.trim(),
-        walkInPetSpecies: formData.walkInPetSpecies.trim(),
+        walkInPetSpecies:
+          matchingSpeciesName(speciesOptions, formData.walkInPetSpecies) ||
+          formData.walkInPetSpecies.trim(),
         walkInPetBreed: formData.walkInPetBreed.trim() || null,
         walkInPetGender: formData.walkInPetGender || null,
         walkInPetAge: formData.walkInPetAge.trim() || null,
@@ -1127,15 +1376,17 @@ function Appointments() {
       };
     }
 
-    const scheduledAt = new Date(
-      `${formData.scheduledDate}T${formData.scheduledTime}:00`,
-    );
+    // The user selects a DATE only. The existing API still expects a
+    // scheduledAt DateTime, so encode it without a user-selected time.
+    // For today, use the current instant to avoid submitting an old hour.
+    // For other dates, use local noon to avoid timezone date rollover.
+    const scheduledAt = toDateOnlyCompatibleTimestamp(formData.scheduledDate);
 
     return {
       ...commonPayload,
       ownerId: formData.ownerId || selectedPatient?.owner?.id || null,
       petId: formData.petId || selectedPatient?.id || null,
-      scheduledAt: scheduledAt.toISOString(),
+      scheduledAt,
       walkInOwnerName: null,
       walkInOwnerPhone: null,
       walkInOwnerAddress: null,
@@ -1153,6 +1404,10 @@ function Appointments() {
     event.preventDefault();
 
     const errors = validateForm();
+    if (speciesCreating) {
+      setFormError("Finish adding the species before saving this appointment.");
+      return;
+    }
 
     if (Object.keys(errors).length) {
       setFieldErrors(errors);
@@ -1200,6 +1455,20 @@ function Appointments() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // Open a dedicated, read-only longitudinal history for registered pets.
+  // Unregistered walk-ins have no petId, so the API cannot link prior visits.
+  function openPatientHistory(appointment) {
+    const petId = appointment?.petId || appointment?.pet?.id;
+    if (!petId) return;
+    const registeredPet = patients.find((item) => item.id === petId);
+    setPatientHistorySubject({
+      petId,
+      fallbackPatient: appointment?.pet || registeredPet || null,
+      fallbackOwner: appointment?.owner || registeredPet?.owner || null,
+    });
+    setShowDetails(false);
   }
 
   async function openAppointmentDetails(appointment) {
@@ -1311,6 +1580,62 @@ function Appointments() {
     });
   }
 
+  // Print either of the same consent forms available in Header.jsx, with
+  // the appointment's registered or walk-in details filled automatically.
+  // Load the full appointment first, since list rows may omit owner address,
+  // date of birth, or veterinarian information.
+  async function openConsentPrint(appointment, formType = "surgery") {
+    if (!appointment?.id) return;
+
+    setError("");
+    setShowDetails(false);
+    setConsentPreview({ appointment, type: formType, loadError: "" });
+    setConsentLoading(true);
+
+    try {
+      const response = await appointmentService.getAppointmentById(appointment.id);
+      const full =
+        response?.data?.appointment ||
+        response?.data?.data?.appointment ||
+        response?.data?.data ||
+        response?.data ||
+        response?.appointment ||
+        response;
+
+      if (!full || typeof full !== "object" || !full.id) {
+        throw new Error("The appointment details could not be read.");
+      }
+
+      // Preserve any populated relationships present on the row if the detail
+      // API omits them, and prefer the fresh details when they are provided.
+      const merged = {
+        ...appointment,
+        ...full,
+        owner: full.owner || appointment.owner,
+        pet: full.pet || appointment.pet,
+        veterinarian: full.veterinarian || appointment.veterinarian,
+      };
+      setConsentPreview((previous) =>
+        previous?.appointment?.id === appointment.id
+          ? { ...previous, appointment: merged, loadError: "" }
+          : previous,
+      );
+    } catch (requestError) {
+      // Basic details already in the appointment row can still be printed.
+      // Never manufacture missing information such as owner address or doctor.
+      setConsentPreview((previous) =>
+        previous?.appointment?.id === appointment.id
+          ? {
+              ...previous,
+              loadError: requestError?.message || "Full appointment details are unavailable.",
+            }
+          : previous,
+      );
+    } finally {
+      setConsentLoading(false);
+    }
+  }
+
   // Display the saved prescription IN THIS PAGE rather than navigating to
   // PrescriptionForm.jsx. Always re-check live status before enabling printing.
   async function printPrescription(appointment) {
@@ -1372,7 +1697,7 @@ function Appointments() {
       [
         "Branch",
         "Appointment No",
-        "Date and Time",
+        "Date",
         "Patient",
         "Owner",
         "Phone",
@@ -1382,12 +1707,12 @@ function Appointments() {
         "Status",
         "Reason",
       ],
-      ...appointments.map((appointment) => [
+      ...filteredAppointments.map((appointment) => [
         appointment.branch?.name ||
           availableBranches.find((b) => b.id === appointment.branchId)?.name ||
           "",
         appointment.appointmentNo,
-        appointment.scheduledAt,
+        formatDateOnly(appointment.scheduledAt || appointment.createdAt),
         appointment.pet?.name || appointment.walkInPetName || "",
         getOwnerName(appointment.owner) || appointment.walkInOwnerName || "",
         appointment.owner?.phone || appointment.walkInOwnerPhone || "",
@@ -1453,7 +1778,7 @@ function Appointments() {
             type="button"
             className="btn btn-light border d-flex align-items-center gap-2"
             onClick={exportVisibleAppointments}
-            disabled={!appointments.length}
+            disabled={!filteredAppointments.length}
           >
             <Download size={17} />
             Export
@@ -1581,6 +1906,39 @@ function Appointments() {
 
       <section className="card border-0 shadow-sm rounded-4">
         <div className="card-body p-3 p-md-4">
+          <div className="d-flex flex-column flex-xl-row justify-content-between align-items-xl-center gap-2 mb-3">
+            <div className="d-flex align-items-center flex-wrap gap-2">
+              <span className="small fw-semibold text-secondary d-inline-flex align-items-center gap-1 me-1">
+                <CalendarDays size={16} /> Quick date
+              </span>
+              {APPOINTMENT_DATE_FILTERS.map((preset) => {
+                const isActive =
+                  appliedFilters.datePreset === preset.value &&
+                  !appliedFilters.date;
+                return (
+                  <button
+                    key={preset.value}
+                    type="button"
+                    className={`btn btn-sm rounded-pill px-3 ${
+                      isActive ? "btn-primary" : "btn-outline-secondary"
+                    }`}
+                    aria-pressed={isActive}
+                    onClick={() => applyQuickDateFilter(preset.value)}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+            <small className="text-secondary">
+              {appliedFilters.datePreset === "custom" && appliedFilters.date
+                ? `Custom date: ${appliedFilters.date}`
+                : APPOINTMENT_DATE_FILTERS.find(
+                    (preset) => preset.value === appliedFilters.datePreset,
+                  )?.label || "All Dates"}
+            </small>
+          </div>
+
           <form className="row g-2 mb-4" onSubmit={applyFilters}>
             <div className="col-12 col-xl">
               <div className="input-group">
@@ -1602,10 +1960,12 @@ function Appointments() {
             <div className="col-sm-6 col-lg-3 col-xl-2">
               <input
                 type="date"
-                className="form-control"
+                className={`form-control ${filters.date ? "border-primary" : ""}`}
                 name="date"
                 value={filters.date}
                 onChange={handleFilterChange}
+                aria-label="Custom appointment date"
+                title="Choose a custom date, then click Search"
               />
             </div>
 
@@ -1661,10 +2021,17 @@ function Appointments() {
             </div>
           </form>
 
-          <div className="d-flex justify-content-between align-items-center mb-3">
+          <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
             <small className="text-secondary">
-              Showing {appointments.length} of {pagination.total} appointments
+              Showing {visibleAppointments.length} of {pagination.total} matching appointments
             </small>
+            {filters.datePreset === "custom" &&
+              filters.date &&
+              (appliedFilters.date !== filters.date || appliedFilters.datePreset !== "custom") && (
+                <small className="text-primary">
+                  Click Search to apply the selected custom date.
+                </small>
+              )}
           </div>
 
           <div className="table-responsive">
@@ -1672,7 +2039,7 @@ function Appointments() {
               <thead className="table-light">
                 <tr>
                   <th>Branch</th>
-                  <th>Date & Time</th>
+                  <th>Date</th>
                   <th>Patient</th>
                   <th>Owner</th>
                   <th>Type / Service</th>
@@ -1696,7 +2063,7 @@ function Appointments() {
                       </div>
                     </td>
                   </tr>
-                ) : appointments.length === 0 ? (
+                ) : visibleAppointments.length === 0 ? (
                   <tr>
                     <td colSpan="8" className="text-center py-5">
                       <CalendarDays size={44} className="text-secondary mb-3" />
@@ -1713,7 +2080,7 @@ function Appointments() {
                     </td>
                   </tr>
                 ) : (
-                  appointments.map((appointment) => (
+                  visibleAppointments.map((appointment) => (
                     <tr key={appointment.id}>
                       <td>
                         <span className="badge bg-primary-subtle text-primary">
@@ -1726,12 +2093,8 @@ function Appointments() {
                       </td>
                       <td>
                         <div className="fw-semibold small">
-                          {formatDateTime(appointment.scheduledAt)}
+                          {formatDateOnly(appointment.scheduledAt || appointment.createdAt)}
                         </div>
-
-                        <small className="text-secondary">
-                          {appointment.durationMin} min
-                        </small>
                       </td>
 
                       <td>
@@ -1823,23 +2186,30 @@ function Appointments() {
                             </button>
                           )}
 
-                          {appointment.status === "COMPLETED" && (
+                          {(appointment.petId || appointment.pet?.id) && (
                             <button
                               type="button"
-                              className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1"
-                              title="Print saved prescription (completed appointments only)"
-                              aria-label={`Print prescription for ${appointment.appointmentNo || appointment.id}`}
-                              onClick={() => printPrescription(appointment)}
-                              disabled={actionLoading === `${appointment.id}:PRINT`}
+                              className="btn btn-sm btn-light border d-inline-flex align-items-center gap-1"
+                              title="View patient appointment and medical history"
+                              aria-label={`View visit and medical history for ${appointment.pet?.name || appointment.walkInPetName || "patient"}`}
+                              onClick={() => openPatientHistory(appointment)}
                             >
-                              {actionLoading === `${appointment.id}:PRINT` ? (
-                                <LoaderCircle size={16} className="spin-icon" />
-                              ) : (
-                                <Printer size={16} />
-                              )}
-                              <span className="d-none d-xxl-inline">Print</span>
+                              <History size={16} />
+                              <span className="d-none d-xxl-inline">History</span>
                             </button>
                           )}
+
+                          {/* One Print menu for prescriptions and both consent forms. */}
+                          <AppointmentPrintMenu
+                            compact
+                            appointment={appointment}
+                            printing={actionLoading === `${appointment.id}:PRINT`}
+                            onSelect={(type) =>
+                              type === "prescription"
+                                ? printPrescription(appointment)
+                                : openConsentPrint(appointment, type)
+                            }
+                          />
 
                           <button
                             type="button"
@@ -1877,7 +2247,7 @@ function Appointments() {
           {!loading && pagination.totalPages > 1 && (
             <Pagination
               pagination={pagination}
-              onPageChange={loadAppointments}
+              onPageChange={setCurrentPage}
             />
           )}
         </div>
@@ -1895,6 +2265,13 @@ function Appointments() {
           branches={availableBranches}
           services={services}
           vaccines={vaccines}
+          speciesOptions={speciesOptions}
+          speciesLoading={speciesLoading}
+          speciesLoadError={speciesLoadError}
+          speciesCreateError={speciesCreateError}
+          speciesCreating={speciesCreating}
+          onRetrySpecies={loadSpecies}
+          onCreateSpecies={addSpeciesAndSelect}
           selectedPatient={selectedPatient}
           selectedServices={selectedServices}
           patientSearch={patientSearch}
@@ -1929,7 +2306,34 @@ function Appointments() {
           onCancel={() => cancelAppointment(selectedAppointment)}
           canPrescribe={isDoctor}
           onPrescription={() => openPrescription(selectedAppointment)}
-          onPrintPrescription={() => printPrescription(selectedAppointment)}
+          onPatientHistory={() => openPatientHistory(selectedAppointment)}
+          onPrint={(type) =>
+            type === "prescription"
+              ? printPrescription(selectedAppointment)
+              : openConsentPrint(selectedAppointment, type)
+          }
+        />
+      )}
+
+      {patientHistorySubject && (
+        <PatientAppointmentHistoryModal
+          key={patientHistorySubject.petId}
+          subject={patientHistorySubject}
+          accessibleBranches={availableBranches}
+          onClose={() => setPatientHistorySubject(null)}
+        />
+      )}
+
+      {consentPreview && (
+        <AppointmentConsentPrintPreview
+          key={`${consentPreview.appointment?.id}:${consentPreview.type}`}
+          initialType={consentPreview.type}
+          appointment={consentPreview.appointment}
+          loadError={consentPreview.loadError}
+          loading={consentLoading}
+          patients={patients}
+          veterinarians={veterinarians}
+          onClose={() => setConsentPreview(null)}
         />
       )}
 
@@ -1958,6 +2362,734 @@ function Appointments() {
 
 // Read-only on-page preview. All content is taken from the SAVED prescription.
 // The existing PrescriptionForm page is not opened for printing.
+// Printable surgery and boarding consent forms, matching Header.jsx.
+// Missing information remains a blank handwriting line rather than a guess.
+function getAppointmentConsentFields(appointment, patients, veterinarians) {
+  const patient = appointment?.pet || patients.find((p) => p.id === appointment?.petId) || {};
+  const owner = appointment?.owner || patient.owner || {};
+  const doctor =
+    appointment?.veterinarian ||
+    veterinarians.find((v) => v.id === appointment?.veterinarianId) ||
+    {};
+
+  const ownerAddress = appointment?.walkInOwnerAddress || formatConsentAddress(owner);
+  const ownerName =
+    getOwnerName(owner) || owner.fullName || owner.name || appointment?.walkInOwnerName || "";
+  const petName = patient.name || appointment?.walkInPetName || "";
+  const birth = patient.dateOfBirth || patient.birthDate || patient.dob;
+  const rawAge = appointment?.walkInPetAge || patient.age;
+  const age = rawAge !== null && rawAge !== undefined && String(rawAge).trim()
+    ? (typeof rawAge === "number" || /^\d+(?:\.\d+)?$/.test(String(rawAge)))
+      ? `${rawAge} ${patient.ageUnit || "years"}`
+      : String(rawAge)
+    : birth ? rxAge(birth).replace("—", "") : "";
+  const gender = patient.gender || patient.sex || appointment?.walkInPetGender || "";
+  const weight = appointment?.walkInPetWeight ?? patient.weightKg ?? patient.weight ?? null;
+  const formattedWeight = weight !== null && weight !== undefined && weight !== ""
+    ? `${weight} kg` : "";
+
+  return {
+    appointmentNo: appointment?.appointmentNo || "",
+    date: formatDateOnly(appointment?.scheduledAt || appointment?.createdAt).replace("—", ""),
+    ownerName,
+    address: ownerAddress,
+    phone: owner.phone || owner.mobile || owner.phoneNumber || appointment?.walkInOwnerPhone || "",
+    petName,
+    age,
+    sex: gender ? formatEnum(String(gender)) : "",
+    doctorName: getUserName(doctor) || doctor.fullName || doctor.name || "",
+    weight: formattedWeight,
+  };
+}
+
+function formatConsentAddress(owner) {
+  if (!owner || typeof owner !== "object") return "";
+  const address = owner.address;
+  if (typeof address === "string" && address.trim()) return address.trim();
+  if (address && typeof address === "object") {
+    const readable = [address.line1, address.line2, address.street, address.ward,
+      address.city, address.district, address.province].filter(Boolean).join(", ");
+    if (readable) return readable;
+  }
+  return [owner.addressLine1, owner.addressLine2, owner.street, owner.wardNo,
+    owner.city, owner.district].filter(Boolean).join(", ");
+}
+
+function AppointmentConsentPrintPreview({
+  initialType = "surgery",
+  appointment,
+  patients,
+  veterinarians,
+  loading,
+  loadError,
+  onClose,
+}) {
+  const [type, setType] = useState(initialType);
+  const fields = getAppointmentConsentFields(appointment, patients, veterinarians);
+
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onClose]);
+
+  const pageTitle =
+    type === "surgery" ? "Surgery & Anaesthetic Consent" :
+    type === "boarding" ? "Boarding Consent Form" : "Both Consent Forms";
+
+  return (
+    <div className="appointment-consent-preview-overlay" role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}>
+      <div className="appointment-consent-preview-modal" role="dialog"
+        aria-modal="true" aria-label="Appointment consent form print preview">
+        <div className="appointment-consent-preview-toolbar">
+          <div>
+            <h5 className="fw-bold mb-1">{pageTitle}</h5>
+            <small className="text-secondary">
+              {fields.petName || "Patient"} · {appointment?.appointmentNo || "Appointment"} · A4 Preview
+            </small>
+          </div>
+          <div className="d-flex align-items-center gap-2 flex-wrap">
+            <button type="button" className="btn btn-light border" onClick={onClose}>Close</button>
+            <button type="button" className="btn btn-primary d-flex align-items-center gap-2"
+              disabled={loading} onClick={() => window.print()}>
+              <Printer size={17} /> Print / Save as PDF
+            </button>
+          </div>
+        </div>
+        <div className="d-flex flex-wrap gap-2 px-3 py-2 border-bottom bg-white appointment-consent-selector">
+          <button type="button" className={`btn btn-sm ${type === "surgery" ? "btn-primary" : "btn-outline-secondary"}`}
+            onClick={() => setType("surgery")}>Surgery & Anaesthetic</button>
+          <button type="button" className={`btn btn-sm ${type === "boarding" ? "btn-primary" : "btn-outline-secondary"}`}
+            onClick={() => setType("boarding")}>Boarding</button>
+          <button type="button" className={`btn btn-sm ${type === "both" ? "btn-primary" : "btn-outline-secondary"}`}
+            onClick={() => setType("both")}>Print Both</button>
+        </div>
+        {loading && <div className="small text-secondary px-3 py-2">Loading full appointment details…</div>}
+        {!loading && loadError && (
+          <div className="small text-warning-emphasis px-3 py-2" role="status">
+            Could not retrieve full details: {loadError}. Blank fields must be completed by hand.
+          </div>
+        )}
+        <div className="appointment-consent-preview-scroll">
+          <div className="appointment-consent-print-root" id="appointment-consent-print-root">
+            {(type === "surgery" || type === "both") && <AppointmentSurgeryConsentSheet fields={fields} />}
+            {(type === "boarding" || type === "both") && <AppointmentBoardingConsentSheet fields={fields} />}
+          </div>
+        </div>
+      </div>
+      <style>{APPOINTMENT_CONSENT_PRINT_STYLES}</style>
+    </div>
+  );
+}
+
+function AppointmentConsentLetterhead() {
+
+  return (
+
+    <div className="appointment-consent-letterhead">
+
+      <div className="appointment-consent-letterhead-title">
+
+        <span className="appointment-consent-print-logo" aria-hidden="true">
+
+          <PawPrint size={29} strokeWidth={1.6} />
+
+        </span>
+
+        <div>
+
+          <h1>Gandaki Vet & Pet Clinic</h1>
+
+          <p>RANIPAUWA-11, POKHARA</p>
+
+        </div>
+
+      </div>
+
+    </div>
+
+  );
+
+}
+
+
+
+function AppointmentConsentLine({ label, value = "", className = "" }) {
+  const filled = String(value ?? "").trim();
+  return (
+    <div className={`appointment-consent-blank-line ${className}`}>
+      <span className="appointment-consent-blank-label">{label}</span>
+      <span className="appointment-consent-blank-rule">
+        {filled && <span className="appointment-consent-value">{filled}</span>}
+      </span>
+    </div>
+  );
+}
+
+
+
+function AppointmentSurgeryConsentSheet({ fields }) {
+
+  return (
+
+    <section className="appointment-consent-sheet" aria-label="Surgery and anaesthetic consent form">
+
+      <AppointmentConsentLetterhead />
+
+      <div className="appointment-consent-metadata">
+
+        <AppointmentConsentLine label="Consent form no.:" value={fields.appointmentNo} />
+
+        <AppointmentConsentLine label="Date:" value={fields.date} />
+
+      </div>
+
+      <h2 className="appointment-consent-document-title">SURGERY AND ANAESTHETIC CONSENT</h2>
+
+
+
+      <div className="appointment-consent-two-column appointment-consent-identity-fields">
+
+        <div>
+
+          <AppointmentConsentLine label="Owner's Name:" value={fields.ownerName} />
+
+          <AppointmentConsentLine label="Address:" value={fields.address} />
+
+          <AppointmentConsentLine label="Contact number:" value={fields.phone} />
+
+        </div>
+
+        <div>
+
+          <AppointmentConsentLine label="Name of Dog/Cat:" value={fields.petName} />
+
+          <AppointmentConsentLine label="Age:" value={fields.age} />
+
+          <AppointmentConsentLine label="Sex:" value={fields.sex} />
+
+        </div>
+
+      </div>
+
+
+
+      <h3 className="appointment-consent-section-heading">SURGICAL PROCEDURE</h3>
+
+      <p className="appointment-consent-section-subheading">Details of the Operation/Procedure</p>
+
+      <div className="appointment-consent-procedure-lines">
+
+        <div className="appointment-consent-blank-rule" />
+
+        <div className="appointment-consent-blank-rule" />
+
+      </div>
+
+
+
+      <ul className="appointment-consent-bullets">
+
+        <li>
+
+          I hereby give permission for the administration of anaesthesia to my
+
+          animal and for the surgical or other procedures detailed on this form.
+
+          I also permit other reasonable alternative courses of action that may
+
+          prove necessary. I understand the potential benefits, risks and side
+
+          effects of these procedures.
+
+        </li>
+
+        <li>
+
+          The nature of these procedures, and any other procedures that may
+
+          become necessary, has been explained to me. I understand the potential
+
+          benefits, risks and side effects of the proposed treatment(s) and
+
+          procedure(s), including drug therapy.
+
+        </li>
+
+        <li>
+
+          I understand that all anaesthetic techniques and surgical procedures
+
+          involve some risks.
+
+        </li>
+
+        <li>
+
+          If my dog/cat/animal dies during the above-mentioned surgical
+
+          procedure, I will not ask for compensation or file a case.
+
+        </li>
+
+      </ul>
+
+
+
+      <p className="appointment-consent-declaration">
+
+        I have read and understood the information on this form. The information
+
+        has been explained to me, and my questions have been answered. I give my
+
+        consent to the above-noted procedure(s) and agree to sign this document.
+
+      </p>
+
+
+
+      <div className="appointment-consent-two-column appointment-consent-signatures">
+
+        <div>
+
+          <AppointmentConsentLine label="Name of Owner:" value={fields.ownerName} />
+
+          <AppointmentConsentLine label="Signature of Owner:" />
+
+        </div>
+
+        <div>
+
+          <AppointmentConsentLine label="Doctor in Charge:" value={fields.doctorName} />
+
+          <AppointmentConsentLine label="Doctor's Signature:" />
+
+        </div>
+
+      </div>
+
+    </section>
+
+  );
+
+}
+
+
+
+function AppointmentBoardingConsentSheet({ fields }) {
+
+  return (
+
+    <section className="appointment-consent-sheet" aria-label="Boarding consent form">
+
+      <AppointmentConsentLetterhead />
+
+      <h2 className="appointment-consent-document-title">BOARDING CONSENT FORM</h2>
+
+
+
+      <div className="appointment-consent-two-column appointment-consent-boarding-fields">
+
+        <div>
+
+          <AppointmentConsentLine label="Client's Name:" value={fields.ownerName} />
+
+          <AppointmentConsentLine label="Date Admitted:" value={fields.date} />
+
+          <AppointmentConsentLine label="Disease condition:" />
+
+        </div>
+
+        <div>
+
+          <AppointmentConsentLine label="Pet's Name:" value={fields.petName} />
+
+          <AppointmentConsentLine label="Date of Pickup:" />
+
+          <AppointmentConsentLine label="Weight:" value={fields.weight} />
+
+        </div>
+
+      </div>
+
+
+
+      <p className="appointment-consent-vaccine-heading">
+
+        ALL CATS AND DOGS ADMITTED TO THE HOSPITAL MUST BE CURRENT ON THE FOLLOWING VACCINES:
+
+      </p>
+
+      <p className="appointment-consent-vaccine-types">
+
+        <strong>DOGS:</strong> DHPPL, RABIES   /  
+
+        <strong>CATS:</strong> RABIES AND PHC
+
+      </p>
+
+      <p className="appointment-consent-body-paragraph">
+
+        If the owner does not provide vaccination details, vaccination of the
+
+        pet may be required at the owner's expense. This is to protect your pet,
+
+        our staff and other clients' pets.
+
+      </p>
+
+
+
+      <h3 className="appointment-consent-section-heading">CONSENT FOR ADMISSION TO CLINIC</h3>
+
+      <p className="appointment-consent-body-paragraph">
+
+        I, the owner of the pet described above, give consent to the employees of
+
+        Gandaki Vet & Pet Clinic, Pokhara to perform the services necessary for
+
+        examination, medication and treatment of my pet. I authorize the
+
+        veterinarians on duty (and the assistants they designate) to examine my
+
+        pet and administer medical treatment or emergency surgical treatment
+
+        considered therapeutically and/or diagnostically necessary based on
+
+        findings during the examination. I consent to such procedures as are
+
+        necessary and desirable in the exercise of the veterinarian's
+
+        professional judgment. I understand that my pet will be treated with
+
+        due care and in accordance with the prevailing standards of veterinary
+
+        practice. I will not claim compensation if my pet dies during
+
+        boarding. I assume financial responsibility for all charges incurred
+
+        for services rendered and understand that full payment is required
+
+        upon discharge.
+
+      </p>
+
+
+
+      <div className="appointment-consent-boarding-signatures">
+
+        <AppointmentConsentLine label="Owner's Signature:" />
+
+        <div className="appointment-consent-two-column">
+
+          <AppointmentConsentLine label="Date:" value={fields.date} />
+
+          <AppointmentConsentLine label="Emergency contact number:" value={fields.phone} />
+
+        </div>
+
+      </div>
+
+    </section>
+
+  );
+
+}
+
+const APPOINTMENT_CONSENT_PRINT_STYLES = `
+
+  .appointment-consent-preview-overlay {
+
+    position: fixed; inset: 0; z-index: 2000;
+
+    display: flex; align-items: center; justify-content: center;
+
+    padding: 18px; background: rgba(17, 24, 39, .72);
+
+  }
+
+  .appointment-consent-preview-modal {
+
+    display: flex; flex-direction: column; width: min(1080px, 100%);
+
+    max-height: calc(100vh - 36px); background: #fff;
+
+    border-radius: 16px; overflow: hidden;
+
+    box-shadow: 0 24px 80px rgba(0, 0, 0, .3);
+
+  }
+
+  .appointment-consent-preview-toolbar {
+
+    display: flex; justify-content: space-between; align-items: center;
+
+    flex-wrap: wrap; gap: 12px; padding: 17px 22px;
+
+    border-bottom: 1px solid #e2e8f0; background: #fff;
+
+  }
+
+  .appointment-consent-preview-scroll {
+
+    overflow: auto; padding: 25px; background: #e9eef4;
+
+  }
+
+  .appointment-consent-print-root {
+
+    display: flex; flex-direction: column; align-items: center; gap: 25px;
+
+  }
+
+  .appointment-consent-sheet {
+
+    font-family: Georgia, 'Times New Roman', serif;
+
+    box-sizing: border-box; width: 210mm; min-height: 297mm;
+
+    padding: 17mm 17mm 16mm; background: white; color: #111;
+
+    box-shadow: 0 4px 24px rgba(0, 0, 0, .16);
+
+    font-size: 11pt; line-height: 1.43;
+
+    print-color-adjust: exact; -webkit-print-color-adjust: exact;
+
+  }
+
+  .appointment-consent-letterhead {
+
+    padding-bottom: 6mm; border-bottom: 1.5px solid #111;
+
+    margin-bottom: 6mm; text-align: center;
+
+  }
+
+  .appointment-consent-letterhead-title {
+
+    display: flex; align-items: center; justify-content: center; gap: 13px;
+
+  }
+
+  .appointment-consent-print-logo {
+
+    width: 45px; height: 45px; border: 1.5px solid #111;
+
+    border-radius: 50%; display: flex; align-items: center;
+
+    justify-content: center; flex-shrink: 0;
+
+  }
+
+  .appointment-consent-letterhead h1 {
+
+    margin: 0; font: 700 20pt/1.2 Georgia, 'Times New Roman', serif;
+
+    text-transform: uppercase; letter-spacing: .25px;
+
+  }
+
+  .appointment-consent-letterhead p {
+
+    margin: 6px 0 0; font: 700 10.5pt/1.3 Arial, sans-serif;
+
+    letter-spacing: .6px;
+
+  }
+
+  .appointment-consent-document-title {
+
+    margin: 8mm 0 7mm; font: 700 14pt/1.3 Georgia, serif;
+
+    text-align: center; text-decoration: underline; text-underline-offset: 4px;
+
+  }
+
+  .appointment-consent-metadata {
+
+    display: flex; justify-content: space-between; gap: 20mm;
+
+  }
+
+  .appointment-consent-metadata .appointment-consent-blank-line {flex: 1;}
+
+  .appointment-consent-two-column {
+
+    display: grid; grid-template-columns: 1fr 1fr; column-gap: 12mm;
+
+  }
+
+  .appointment-consent-blank-line {
+
+    display: flex; align-items: baseline; gap: 5px;
+
+    min-height: 8mm; margin-bottom: 2mm; font-size: 10.5pt;
+
+  }
+
+  .appointment-consent-blank-label {flex: 0 0 auto; white-space: nowrap;}
+
+  .appointment-consent-blank-rule {
+    flex: 1;
+    display: flex;
+    align-items: baseline;
+    min-width: 12mm;
+    min-height: 1.25em;
+    border-bottom: 1px dotted #444;
+    padding: 0 1mm 1px;
+  }
+  .appointment-consent-value {
+    font-weight: 600;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+
+  .appointment-consent-section-heading {
+
+    margin: 8mm 0 2mm; font: 700 12pt/1.3 Georgia, serif;
+
+  }
+
+  .appointment-consent-section-subheading {font-weight: bold; margin: 0 0 3mm;}
+
+  .appointment-consent-procedure-lines .appointment-consent-blank-rule {
+
+    margin: 6mm 0; width: 100%;
+
+  }
+
+  .appointment-consent-bullets {
+
+    margin: 5mm 0 5mm; padding-left: 6mm; text-align: justify;
+
+  }
+
+  .appointment-consent-bullets li {margin-bottom: 3mm; padding-left: 1mm;}
+
+  .appointment-consent-declaration {
+
+    margin: 6mm 0; font-style: italic; text-align: justify;
+
+  }
+
+  .appointment-consent-signatures {margin-top: 14mm;}
+
+  .appointment-consent-signatures .appointment-consent-blank-line {margin-bottom: 7mm;}
+
+  .appointment-consent-boarding-fields {margin-top: 9mm;}
+
+  .appointment-consent-vaccine-heading {
+
+    margin: 7mm 0 4mm; font-weight: 700; font-size: 10.8pt;
+
+  }
+
+  .appointment-consent-vaccine-types {margin: 0 0 7mm; font-weight: 600;}
+
+  .appointment-consent-body-paragraph {margin: 0 0 6mm; line-height: 1.5; text-align: justify;}
+
+  .appointment-consent-boarding-signatures {margin-top: 16mm;}
+
+  .appointment-consent-boarding-signatures > .appointment-consent-blank-line {width: 64%; margin-bottom: 7mm;}
+
+
+
+  @media screen and (max-width: 850px) {
+
+    .appointment-consent-preview-scroll {padding: 12px;}
+
+    .appointment-consent-sheet {zoom: .76;}
+
+  }
+
+  @media screen and (max-width: 540px) {
+
+    .appointment-consent-preview-overlay {padding: 7px;}
+
+    .appointment-consent-preview-modal {max-height: calc(100vh - 14px);}
+
+    .appointment-consent-preview-toolbar {padding: 12px;}
+
+    .appointment-consent-sheet {zoom: .48;}
+
+  }
+
+
+
+  @page { size: A4 portrait; margin: 12mm; }
+
+  @media print {
+
+    html, body {height: auto !important; overflow: visible !important; background: #fff !important;}
+
+    body * {visibility: hidden !important;}
+
+    .appointment-consent-print-root, .appointment-consent-print-root * {visibility: visible !important;}
+
+    .appointment-consent-preview-overlay, .appointment-consent-preview-modal, .appointment-consent-preview-scroll {
+
+      position: static !important; display: block !important;
+
+      width: 100% !important; height: auto !important;
+
+      max-height: none !important; margin: 0 !important;
+
+      padding: 0 !important; overflow: visible !important;
+
+      background: white !important; border: 0 !important;
+
+      box-shadow: none !important;
+
+    }
+
+    .appointment-consent-preview-toolbar, .appointment-consent-selector {display: none !important;}
+
+    .appointment-consent-print-root {
+
+      position: absolute !important; top: 0 !important; left: 0 !important;
+
+      display: block !important; width: 100% !important;
+
+      margin: 0 !important; padding: 0 !important;
+
+    }
+
+    .appointment-consent-sheet {
+
+      display: block !important; box-sizing: border-box !important;
+
+      zoom: 1 !important; width: 100% !important;
+
+      min-height: 0 !important; margin: 0 !important; padding: 0 !important;
+
+      box-shadow: none !important; font-size: 10.5pt !important;
+
+      break-after: page; page-break-after: always;
+
+    }
+
+    .appointment-consent-sheet:last-child {break-after: auto; page-break-after: auto;}
+
+  }
+
+`;
+
+
+
+
+
 function AppointmentPrescriptionPreview({ data, onClose }) {
   const { appointment, prescription: rx } = data;
   const pet = appointment.pet || rx.pet || {};
@@ -2063,7 +3195,7 @@ function AppointmentPrescriptionPreview({ data, onClose }) {
               <RxInfo label="Age" value={pet.age ? `${pet.age} years` : appointment.walkInPetAge || rxAge(pet.dateOfBirth)} />
               <RxInfo label="Owner" value={ownerName} />
               <RxInfo label="Phone" value={owner.phone || appointment.walkInOwnerPhone} />
-              <RxInfo label="Visit date" value={formatDateTime(appointment.scheduledAt)} />
+              <RxInfo label="Visit date" value={formatDateOnly(appointment.scheduledAt)} />
               <RxInfo label="Veterinarian" value={doctorName} />
               <RxInfo label="Branch" value={appointment.branch?.name} />
               <RxInfo label="Appointment No." value={appointment.appointmentNo} />
@@ -2311,6 +3443,13 @@ function AppointmentFormModal({
   branches,
   services,
   vaccines,
+  speciesOptions,
+  speciesLoading,
+  speciesLoadError,
+  speciesCreateError,
+  speciesCreating,
+  onRetrySpecies,
+  onCreateSpecies,
   selectedPatient,
   selectedServices,
   patientSearch,
@@ -2405,8 +3544,8 @@ function AppointmentFormModal({
               <div className="col-md-6 d-flex align-items-end">
                 <div className="alert alert-light border mb-0 w-100 py-2">
                   {isWalkIn
-                    ? "Walk-in appointments are checked in immediately using the current date and time."
-                    : "Select an existing registered patient and appointment schedule."}
+                    ? "Walk-in visits are checked in immediately. The visit date is recorded automatically."
+                    : "Select an existing registered patient and the appointment date."}
                 </div>
               </div>
             </div>
@@ -2453,11 +3592,18 @@ function AppointmentFormModal({
                   col="col-md-4"
                 />
 
-                <FormInput
-                  label="Species"
-                  name="walkInPetSpecies"
+                <SpeciesSearchSelect
                   value={formData.walkInPetSpecies}
-                  onChange={onChange}
+                  onChange={(name) =>
+                    onChange({ target: { name: "walkInPetSpecies", value: name } })
+                  }
+                  options={speciesOptions}
+                  loading={speciesLoading}
+                  loadError={speciesLoadError}
+                  createError={speciesCreateError}
+                  creating={speciesCreating}
+                  onRetry={onRetrySpecies}
+                  onCreate={onCreateSpecies}
                   error={fieldErrors.walkInPetSpecies}
                   required
                   col="col-md-4"
@@ -2557,7 +3703,7 @@ function AppointmentFormModal({
             </FormSection>
           )}
 
-          <FormSection title="Appointment schedule">
+          <FormSection title="Appointment details">
             <div className="row g-3">
               <FormSelect
                 label="Appointment type"
@@ -2576,44 +3722,17 @@ function AppointmentFormModal({
               </FormSelect>
 
               {!isWalkIn && (
-                <>
-                  <FormInput
-                    label="Date"
-                    name="scheduledDate"
-                    type="date"
-                    value={formData.scheduledDate}
-                    onChange={onChange}
-                    error={fieldErrors.scheduledAt}
-                    required
-                    col="col-md-3"
-                  />
-                  <FormInput
-                    label="Time"
-                    name="scheduledTime"
-                    type="time"
-                    value={formData.scheduledTime}
-                    onChange={onChange}
-                    error={fieldErrors.scheduledAt}
-                    required
-                    col="col-md-2"
-                  />
-                </>
+                <FormInput
+                  label="Date"
+                  name="scheduledDate"
+                  type="date"
+                  value={formData.scheduledDate}
+                  onChange={onChange}
+                  error={fieldErrors.scheduledDate}
+                  required
+                  col="col-md-4"
+                />
               )}
-
-              <FormInput
-                label="Duration"
-                name="durationMin"
-                type="number"
-                min="5"
-                max="480"
-                step="5"
-                value={formData.durationMin}
-                onChange={onChange}
-                error={fieldErrors.durationMin}
-                required
-                disabled={formData.type === "VACCINATION"}
-                col={isWalkIn ? "col-md-4" : "col-md-3"}
-              />
 
               <FormSelect
                 label="Veterinarian"
@@ -2804,7 +3923,7 @@ function AppointmentFormModal({
           <button
             type="submit"
             className="btn btn-primary d-flex align-items-center gap-2"
-            disabled={submitting}
+            disabled={submitting || speciesCreating}
           >
             {submitting && <LoaderCircle size={17} className="spin-icon" />}
 
@@ -2820,6 +3939,998 @@ function AppointmentFormModal({
   );
 }
 
+// ================================================================
+// PATIENT HISTORY — chronological appointments + clinical records
+// Accepts appointment history responses with { data: appointments[], summary, pagination }
+// or { appointments: [...] }. Loads full prescriptions separately when needed.
+// Data is fetched only when this modal opens (and on Load Older or branch change).
+// Quick-date filters on the appointments table remain entirely client-side.
+// ================================================================
+function historyValue(value) {
+  if (value === null || value === undefined || value === "") return "";
+  return typeof value === "object" ? "" : String(value).trim();
+}
+
+function HistoryTextField({ label, value, wide = false }) {
+  const text = historyValue(value);
+  if (!text) return null;
+  return (
+    <div className={`patient-history-field ${wide ? "patient-history-field-wide" : ""}`}>
+      <span>{label}</span>
+      <div>{text}</div>
+    </div>
+  );
+}
+
+function HistorySection({ title, icon: Icon, children }) {
+  return (
+    <section className="patient-history-section">
+      <h4>{Icon && <Icon size={16} />} {title}</h4>
+      <div className="patient-history-section-body">{children}</div>
+    </section>
+  );
+}
+
+// The appointment history response may embed prescriptions inside a medical
+// record, while this clinic also saves full prescriptions separately.
+// Keep both sources and avoid showing the same saved prescription twice.
+function historyPrescriptionList(visit, lookup) {
+  const embedded = [
+    ...(Array.isArray(visit?.medicalRecord?.prescriptions) ? visit.medicalRecord.prescriptions : []),
+    ...(Array.isArray(visit?.prescriptions) ? visit.prescriptions : []),
+    ...(visit?.prescription && typeof visit.prescription === "object" ? [visit.prescription] : []),
+    ...(lookup?.state === "found" && lookup.prescription ? [lookup.prescription] : []),
+  ].filter((prescription) => prescription && typeof prescription === "object");
+
+  const byId = new Map();
+  const withoutId = [];
+  for (const prescription of embedded) {
+    if (prescription.id) {
+      // The separate saved record normally has more detail than a compact
+      // prescription nested inside the appointment history response.
+      byId.set(prescription.id, { ...(byId.get(prescription.id) || {}), ...prescription });
+    } else {
+      withoutId.push(prescription);
+    }
+  }
+  return [...byId.values(), ...withoutId];
+}
+
+function historySavedPrescriptionFromResponse(response, appointmentId) {
+  const root = response?.data?.data?.prescription ||
+    response?.data?.prescription ||
+    response?.prescription ||
+    response?.data?.data ||
+    response?.data ||
+    response;
+  const prescription = Array.isArray(root) ? root.find((item) => item?.id) : root;
+  if (!prescription || typeof prescription !== "object" || !prescription.id) return null;
+  // Do not accidentally display another appointment's clinical information.
+  if (prescription.appointmentId && prescription.appointmentId !== appointmentId) {
+    throw new Error("Prescription does not belong to this appointment.");
+  }
+  return prescription;
+}
+
+function historyPrescriptionNotFound(error) {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
+  if (status === 404) return true;
+  const message = String(error?.message || "");
+  return /(?:\b404\b|no saved prescription|prescription not found|no prescription found)/i.test(message);
+}
+
+function HistoryPrescriptionDetails({ prescription, number }) {
+  const rx = prescription || {};
+  const medicines = (
+    Array.isArray(rx.medicines) ? rx.medicines :
+    Array.isArray(rx.items) ? rx.items : []
+  ).filter((item) => item && typeof item === "object");
+  const treatmentPlans = Array.isArray(rx.treatmentPlans) ? rx.treatmentPlans : [];
+  const labs = Array.isArray(rx.laboratoryTests) ? rx.laboratoryTests : [];
+  const imaging = Array.isArray(rx.imagingRequests) ? rx.imagingRequests : [];
+  const vaccines = Array.isArray(rx.vaccinations) ? rx.vaccinations : [];
+  const cbc = rx.bloodReport || {};
+  const cbcRows = Array.isArray(cbc.rows) ? cbc.rows : [];
+  const biochemical = cbc.biochemistry || {};
+  const biochemRows = Array.isArray(biochemical.rows) ? biochemical.rows : [];
+  const temp = rx.temperatureF != null && rx.temperatureF !== ""
+    ? `${rx.temperatureF} °F`
+    : rx.temperatureC != null && rx.temperatureC !== "" ? `${rx.temperatureC} °C` : "";
+
+  const clinicalFields = [
+    ["Chief complaint", rx.chiefComplaint],
+    ["Present illness / history", rx.history],
+    ["Known allergies", rx.allergies],
+    ["Physical examination", rx.physicalExamination],
+    ["Investigation", rx.investigation === "OTHER" ? rx.investigationOther : rx.investigation],
+    ["Differential diagnosis", rx.differentialDiagnosis],
+    ["Diagnosis", rx.diagnosis],
+    ["Treatment plan", rx.treatmentPlan],
+  ];
+  const hasClinical = clinicalFields.some(([, value]) => historyValue(value));
+  const hasVitals = [rx.weightKg, temp, rx.pulseBpm, rx.respirationRate,
+    rx.hydrationStatus, rx.bodyConditionScore].some((value) => value !== null && value !== undefined && value !== "");
+
+  return (
+    <div className="patient-history-rx patient-history-rx-detailed">
+      <div className="patient-history-rx-heading">
+        <div className="d-flex align-items-center flex-wrap gap-2">
+          <span className="patient-history-rx-icon"><Pill size={17} /></span>
+          <div>
+            <strong>Prescription {number}</strong>
+            {rx.id && <small className="d-block text-secondary">Reference: {rx.id}</small>}
+          </div>
+          {rx.status && <span className="patient-history-small-chip">{formatEnum(rx.status)}</span>}
+        </div>
+        <div className="patient-history-muted">
+          {rx.startDate ? `Started ${formatDateOnly(rx.startDate)}` : ""}
+          {rx.endDate ? ` · Until ${formatDateOnly(rx.endDate)}` : ""}
+        </div>
+      </div>
+
+      {hasClinical && (
+        <div className="patient-history-rx-subsection">
+          <h5>Clinical examination and assessment</h5>
+          <div className="patient-history-fields">
+            {clinicalFields.map(([label, value]) => (
+              <HistoryTextField key={label} label={label} value={value} wide />
+            ))}
+          </div>
+        </div>
+      )}
+      {hasVitals && (
+        <div className="patient-history-rx-subsection">
+          <h5>Recorded vitals</h5>
+          <div className="patient-history-fields">
+            <HistoryTextField label="Weight" value={rx.weightKg != null && rx.weightKg !== "" ? `${rx.weightKg} kg` : ""} />
+            <HistoryTextField label="Temperature" value={temp} />
+            <HistoryTextField label="Pulse" value={rx.pulseBpm != null && rx.pulseBpm !== "" ? `${rx.pulseBpm} bpm` : ""} />
+            <HistoryTextField label="Respiration" value={rx.respirationRate != null && rx.respirationRate !== "" ? `${rx.respirationRate}/min` : ""} />
+            <HistoryTextField label="Hydration" value={rx.hydrationStatus} />
+            <HistoryTextField label="Body condition score" value={rx.bodyConditionScore != null && rx.bodyConditionScore !== "" ? `${rx.bodyConditionScore}/9` : ""} />
+          </div>
+        </div>
+      )}
+      {treatmentPlans.length > 0 && (
+        <div className="patient-history-rx-subsection">
+          <h5>Treatment plan history</h5>
+          {treatmentPlans.map((item, index) => (
+            <HistoryTextField key={item.id || index}
+              label={`Plan ${index + 1}${item.date ? ` · ${formatDateOnly(item.date)}` : ""}`}
+              value={item.plan} wide />
+          ))}
+        </div>
+      )}
+      {medicines.length > 0 && (
+        <div className="patient-history-rx-subsection">
+          <h5>Prescribed medicines</h5>
+          <div className="table-responsive">
+            <table className="table table-sm align-middle patient-history-med-table">
+              <thead><tr><th>Medicine</th><th>Strength</th><th>Dose</th><th>Frequency / route</th><th>Duration</th><th>Quantity</th></tr></thead>
+              <tbody>
+                {medicines.map((medicine, index) => (
+                  <tr key={`${medicine.id || medicine.medicineName || "med"}-${index}`}>
+                    <td><strong>{historyValue(medicine.medicineName) || "—"}</strong>
+                      {medicine.instructions && <small className="d-block text-secondary patient-history-prescription-instructions">{medicine.instructions}</small>}
+                    </td>
+                    <td>{historyValue(medicine.strength) || "—"}</td>
+                    <td>{historyValue(medicine.dosage) || "—"}</td>
+                    <td>{[historyValue(medicine.frequency), medicine.route && formatEnum(medicine.route)].filter(Boolean).join(" / ") || "—"}</td>
+                    <td>{historyValue(medicine.duration) || "—"}</td>
+                    <td>{historyValue(medicine.quantity) || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {(cbcRows.length > 0 || biochemRows.length > 0 || historyValue(cbc.interpretation)) && (
+        <div className="patient-history-rx-subsection">
+          <h5>Laboratory findings</h5>
+          {cbcRows.length > 0 && (
+            <div className="table-responsive">
+              <div className="patient-history-rx-minor-title">Complete blood count</div>
+              <table className="table table-sm patient-history-med-table">
+                <thead><tr><th>Test</th><th>Result</th><th>Unit</th><th>Reference range</th><th>Flag</th></tr></thead>
+                <tbody>{cbcRows.map((row, index) => (
+                  <tr key={`${row.key || row.test}-${index}`}><td>{row.test}</td><td><strong>{row.result ?? "—"}</strong></td>
+                    <td>{row.unit || "—"}</td><td>{row.range || "—"}</td><td>{row.flag || "—"}</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+          {biochemRows.length > 0 && (
+            <div className="table-responsive">
+              <div className="patient-history-rx-minor-title">Biochemistry</div>
+              <table className="table table-sm patient-history-med-table">
+                <thead><tr><th>Test</th><th>Result</th><th>Unit</th><th>Reference range</th><th>Flag</th></tr></thead>
+                <tbody>{biochemRows.map((row, index) => (
+                  <tr key={`${row.key || row.test}-${index}`}><td>{row.test}</td><td><strong>{row.result ?? "—"}</strong></td>
+                    <td>{row.unit || "—"}</td><td>{row.range || "—"}</td><td>{row.flag || "—"}</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+          <div className="patient-history-fields">
+            <HistoryTextField label="Smear findings" value={cbc.smearFindings} wide />
+            <HistoryTextField label="Interpretation" value={cbc.interpretation} wide />
+            <HistoryTextField label="Lab remarks" value={cbc.remarks} wide />
+          </div>
+        </div>
+      )}
+      {labs.length > 0 && (
+        <div className="patient-history-rx-subsection">
+          <h5>Laboratory requests</h5>
+          {labs.map((lab, index) => (
+            <div className="patient-history-rx-simple-row" key={lab.id || index}>
+              <strong>{lab.testName || "Laboratory test"}</strong>
+              <div>{[lab.specimen, lab.priority && formatEnum(lab.priority), lab.instructions].filter(Boolean).join(" · ")}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {imaging.length > 0 && (
+        <div className="patient-history-rx-subsection">
+          <h5>Imaging / diagnostic reports</h5>
+          {imaging.map((item, index) => (
+            <div className="patient-history-rx-simple-row" key={item.id || index}>
+              <strong>{[item.type && formatEnum(item.type), item.bodyPart].filter(Boolean).join(" · ") || "Imaging"}</strong>
+              <div>{item.clinicalHistory || ""}</div>
+              <div>{item.result?.findings ? `Findings: ${item.result.findings}` : ""}</div>
+              <div>{item.result?.impression ? `Impression: ${item.result.impression}` : ""}</div>
+              <div>{item.result?.recommendations ? `Recommendations: ${item.result.recommendations}` : ""}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {vaccines.length > 0 && (
+        <div className="patient-history-rx-subsection">
+          <h5>Vaccinations documented in prescription</h5>
+          {vaccines.map((vaccine, index) => (
+            <div className="patient-history-rx-simple-row" key={vaccine.id || index}>
+              <strong>{vaccine.vaccineName || "Vaccine"}</strong>
+              <div>{[vaccine.dose, vaccine.route && formatEnum(vaccine.route),
+                vaccine.batchNo && `Batch ${vaccine.batchNo}`,
+                vaccine.administeredDate && `Given ${formatDateOnly(vaccine.administeredDate)}`,
+                vaccine.nextDueDate && `Next due ${formatDateOnly(vaccine.nextDueDate)}`].filter(Boolean).join(" · ")}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {(rx.instructions || rx.advice || rx.followUpDate || rx.followUpNotes || rx.otherReports) && (
+        <div className="patient-history-rx-subsection">
+          <h5>Advice and follow-up</h5>
+          <div className="patient-history-fields">
+            <HistoryTextField label="Medication instructions" value={rx.instructions} wide />
+            <HistoryTextField label="Home care advice" value={rx.advice} wide />
+            <HistoryTextField label="Follow-up date" value={rx.followUpDate && formatDateOnly(rx.followUpDate)} />
+            <HistoryTextField label="Follow-up notes" value={rx.followUpNotes} wide />
+            <HistoryTextField label="Additional reports" value={rx.otherReports} wide />
+          </div>
+        </div>
+      )}
+      {!hasClinical && !hasVitals && !treatmentPlans.length && !medicines.length &&
+        !cbcRows.length && !biochemRows.length && !labs.length && !imaging.length &&
+        !vaccines.length && !rx.instructions && !rx.advice && (
+        <p className="patient-history-muted mb-0 mt-2">The prescription is saved, but no clinical details were included in this response.</p>
+      )}
+    </div>
+  );
+}
+
+function PatientHistoryVisit({ visit, showMedicalOnly, expanded, onToggle, prescriptionLookup, onRetryPrescription }) {
+  const record = visit.medicalRecord;
+  const prescriptions = historyPrescriptionList(visit, prescriptionLookup);
+  const serviceNames = getServiceNames(visit);
+  const withClinical = Boolean(record || prescriptions.length);
+  const showDetails = showMedicalOnly || expanded;
+  const hasExtras = Boolean(visit.vaccination || visit.invoice || prescriptions.length);
+  const clinicalDiagnosis = historyValue(record?.diagnosis) ||
+    prescriptions.map((item) => historyValue(item.diagnosis)).find(Boolean) || "";
+  const date = visit.scheduledAt || visit.createdAt;
+
+  return (
+    <article className={`patient-history-visit ${withClinical ? "has-record" : ""}`}>
+      <div className="patient-history-rail" aria-hidden="true"><span /></div>
+      <div className="patient-history-visit-card">
+        <div className="patient-history-visit-top">
+          <div className="d-flex gap-3 align-items-start flex-grow-1" style={{ minWidth: 0 }}>
+            <div className="patient-history-date-icon"><CalendarDays size={20} /></div>
+            <div style={{ minWidth: 0 }}>
+              <div className="d-flex gap-2 flex-wrap align-items-center">
+                <h3 className="patient-history-visit-title">{formatEnum(visit.type)}</h3>
+                <StatusBadge status={visit.status} />
+                {record && <span className="patient-history-record-chip"><Stethoscope size={12} /> Medical record</span>}
+                {prescriptions.length > 0 && <span className="patient-history-record-chip"><Pill size={12} /> {prescriptions.length} prescription{prescriptions.length !== 1 ? "s" : ""}</span>}
+              </div>
+              <p className="patient-history-muted mb-1">
+                {formatDateOnly(date)} {visit.appointmentNo ? ` · ${visit.appointmentNo}` : ""}
+              </p>
+              <div className="patient-history-meta">
+                {visit.veterinarian && <span><UserRound size={13} /> {getUserName(visit.veterinarian)}</span>}
+                {visit.branch?.name && <span><Building2 size={13} /> {visit.branch.name}</span>}
+                {visit.mode && <span><ClipboardList size={13} /> {formatEnum(visit.mode)}</span>}
+              </div>
+            </div>
+          </div>
+          {!showMedicalOnly && (
+            <button
+              type="button"
+              className="btn btn-sm btn-light border patient-history-expand"
+              aria-expanded={expanded}
+              onClick={onToggle}
+            >
+              {expanded ? "Hide details" : "View details"}
+              <ChevronDown size={15} className={expanded ? "patient-history-rotate" : ""} />
+            </button>
+          )}
+        </div>
+
+        {clinicalDiagnosis && (
+          <div className="patient-history-diagnosis">
+            <strong>Diagnosis</strong>
+            <span>{clinicalDiagnosis}</span>
+          </div>
+        )}
+        {!showDetails && !clinicalDiagnosis && visit.reason && (
+          <p className="patient-history-preview"><strong>Reason:</strong> {visit.reason}</p>
+        )}
+        {!showDetails && serviceNames && <div className="patient-history-services"><strong>Services:</strong> {serviceNames}</div>}
+
+        {showDetails && (
+          <div className="patient-history-expanded">
+            {!showMedicalOnly && (
+              <HistorySection title="Appointment information" icon={CalendarDays}>
+                <div className="patient-history-fields">
+                  <HistoryTextField label="Reason for visit" value={visit.reason} wide />
+                  <HistoryTextField label="Symptoms" value={visit.symptoms} wide />
+                  <HistoryTextField label="Services" value={serviceNames} wide />
+                  <HistoryTextField label="Appointment notes" value={visit.notes} wide />
+                  <HistoryTextField label="Checked in" value={visit.checkedInAt && formatDateOnly(visit.checkedInAt)} />
+                  <HistoryTextField label="Completed" value={visit.completedAt && formatDateOnly(visit.completedAt)} />
+                </div>
+              </HistorySection>
+            )}
+
+            {withClinical ? (
+              <HistorySection title="Medical / clinical record" icon={Stethoscope}>
+                <div className="d-flex flex-wrap gap-2 mb-3">
+                  {record.status && <span className="patient-history-small-chip">Record: {formatEnum(record.status)}</span>}
+                  {record.finalizedAt && <span className="patient-history-small-chip">Finalized: {formatDateOnly(record.finalizedAt)}</span>}
+                </div>
+                <div className="patient-history-fields">
+                  <HistoryTextField label="Chief complaint" value={record.chiefComplaint} wide />
+                  <HistoryTextField label="Medical history" value={record.history} wide />
+                  <HistoryTextField label="Examination" value={record.examination} wide />
+                  <HistoryTextField label="Diagnosis" value={record.diagnosis} wide />
+                  <HistoryTextField label="Differential diagnosis" value={record.differentialDiagnosis} wide />
+                  <HistoryTextField label="Treatment plan" value={record.treatmentPlan} wide />
+                  <HistoryTextField label="Follow-up date" value={record.followUpDate && formatDateOnly(record.followUpDate)} />
+                  <HistoryTextField label="Clinical notes" value={record.notes} wide />
+                </div>
+                {!record.chiefComplaint && !record.history && !record.examination &&
+                  !record.diagnosis && !record.treatmentPlan && !record.notes && (
+                    <p className="patient-history-muted mb-0">A medical record is linked, but no clinical narrative was supplied.</p>
+                  )}
+              </HistorySection>
+            ) : !showMedicalOnly && !prescriptions.length && (
+              <div className="patient-history-no-clinical"><Stethoscope size={16} /> No medical record is linked to this appointment.</div>
+            )}
+
+            {prescriptions.length > 0 && (
+              <HistorySection title="Saved prescriptions and treatment details" icon={Pill}>
+                {prescriptions.map((rx, index) => (
+                  <HistoryPrescriptionDetails
+                    key={rx.id || `${visit.id}-prescription-${index}`}
+                    prescription={rx}
+                    number={index + 1}
+                  />
+                ))}
+              </HistorySection>
+            )}
+            {prescriptionLookup?.state === "loading" && (
+              <div className="patient-history-prescription-status" role="status">
+                <LoaderCircle size={15} className="spin-icon" /> Checking the saved prescription for this visit…
+              </div>
+            )}
+            {prescriptionLookup?.state === "error" && (
+              <div className="patient-history-prescription-status patient-history-prescription-warning" role="alert">
+                <AlertCircle size={16} />
+                <span>Prescription could not be loaded: {prescriptionLookup.error}</span>
+                <button type="button" className="btn btn-sm btn-outline-secondary ms-auto"
+                  onClick={() => onRetryPrescription(visit.id)}>Retry</button>
+              </div>
+            )}
+
+            {visit.vaccination && (
+              <HistorySection title="Vaccination record" icon={Syringe}>
+                <div className="patient-history-fields">
+                  <HistoryTextField label="Vaccine" value={visit.vaccination.vaccineName} />
+                  <HistoryTextField label="Status" value={formatEnum(visit.vaccination.status)} />
+                  <HistoryTextField label="Dose" value={visit.vaccination.dose} />
+                  <HistoryTextField label="Batch number" value={visit.vaccination.batchNumber} />
+                  <HistoryTextField label="Administered" value={visit.vaccination.administeredDate && formatDateOnly(visit.vaccination.administeredDate)} />
+                  <HistoryTextField label="Next due" value={visit.vaccination.nextDueDate && formatDateOnly(visit.vaccination.nextDueDate)} />
+                  <HistoryTextField label="Notes" value={visit.vaccination.notes} wide />
+                </div>
+              </HistorySection>
+            )}
+
+            {visit.invoice && !showMedicalOnly && (
+              <HistorySection title="Invoice" icon={ReceiptText}>
+                <div className="patient-history-fields">
+                  <HistoryTextField label="Invoice number" value={visit.invoice.invoiceNumber} />
+                  <HistoryTextField label="Status" value={formatEnum(visit.invoice.status)} />
+                  <HistoryTextField label="Total (NPR)" value={historyMoney(visit.invoice.totalAmount)} />
+                  <HistoryTextField label="Paid (NPR)" value={historyMoney(visit.invoice.paidAmount)} />
+                  <HistoryTextField label="Balance (NPR)" value={historyMoney(visit.invoice.balanceAmount)} />
+                </div>
+              </HistorySection>
+            )}
+            {!withClinical && !hasExtras && !visit.reason && !visit.notes && !visit.symptoms && (
+              <p className="patient-history-muted mb-0">No additional details were recorded for this visit.</p>
+            )}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function historyMoney(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toLocaleString("en-NP", { maximumFractionDigits: 2 }) : String(value);
+}
+
+function PatientAppointmentHistoryModal({ subject, accessibleBranches, onClose }) {
+  const [branchId, setBranchId] = useState("all");
+  const [tab, setTab] = useState("appointments");
+  const [patient, setPatient] = useState(subject.fallbackPatient || null);
+  const [visits, setVisits] = useState([]);
+  const [summary, setSummary] = useState({ total: 0, completed: 0 });
+  const [pagination, setPagination] = useState({ page: 1, totalPages: 0, total: 0 });
+  const [expandedIds, setExpandedIds] = useState([]);
+  // Cache saved prescriptions by appointment ID. Unlike many clinical fields,
+  // prescriptions are often stored outside the MedicalRecord relation.
+  const [prescriptionLookup, setPrescriptionLookup] = useState({});
+  const prescriptionRequests = useRef(new Set());
+  const isMounted = useRef(true);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState("");
+  const requestId = useRef(0);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onEscape = (event) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onEscape);
+    };
+  }, [onClose]);
+
+  const loadHistory = useCallback(async (page = 1) => {
+    const currentRequest = ++requestId.current;
+    const isFirstPage = page === 1;
+    if (isFirstPage) {
+      setLoading(true);
+      setVisits([]);
+      setPagination({ page: 1, totalPages: 0, total: 0 });
+    } else {
+      setLoadingMore(true);
+    }
+    setError("");
+
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(PATIENT_HISTORY_PAGE_SIZE),
+        petId: subject.petId,
+      });
+      if (branchId !== "all") params.set("branchId", branchId);
+      const response = await apiRequest(`${PATIENT_HISTORY_API_PATH(subject.petId)}?${params}`);
+      if (requestId.current !== currentRequest) return;
+      if (response?.success === false || response?.data?.success === false) {
+        throw new Error(response?.message || response?.data?.message || "Could not retrieve patient history.");
+      }
+      // Match the user's provided backend response: response.data is the visits array.
+      // Allow an extra axios/apiRequest wrapper without misreading its pagination.
+      const payload = Array.isArray(response?.data) || response?.patient || response?.pagination
+        ? response : (response?.data || response);
+      const pageVisits = Array.isArray(payload?.data) ? payload.data :
+        (Array.isArray(payload?.data?.appointments) ? payload.data.appointments :
+          (Array.isArray(payload?.appointments) ? payload.appointments : []));
+      if (payload?.patient) setPatient(payload.patient);
+      setSummary({
+        total: Number(payload?.summary?.total ?? payload?.pagination?.total ?? 0),
+        completed: Number(payload?.summary?.completed ?? 0),
+      });
+      const paging = payload?.pagination || {};
+      const totalPages = Number(paging.totalPages ?? 1);
+      setPagination({
+        page: Number(paging.page || page),
+        totalPages: Number.isFinite(totalPages) ? totalPages : 1,
+        total: Number(paging.total ?? payload?.summary?.total ?? pageVisits.length),
+      });
+      setVisits((previous) => {
+        if (isFirstPage) return pageVisits;
+        const seen = new Set(previous.map((v) => v.id).filter(Boolean));
+        return [...previous, ...pageVisits.filter((v) => !v.id || !seen.has(v.id))];
+      });
+    } catch (requestError) {
+      if (requestId.current !== currentRequest) return;
+      setError(requestError?.message || "Could not retrieve patient history.");
+    } finally {
+      if (requestId.current === currentRequest) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    }
+  }, [subject.petId, branchId]);
+
+  useEffect(() => {
+    loadHistory(1);
+    return () => { requestId.current += 1; };
+  }, [loadHistory]);
+
+  // Fetch saved prescriptions only when the Medical Records tab is opened or
+  // one appointment is expanded. This avoids 20 extra requests during normal
+  // history browsing. Limit concurrent requests to protect the backend.
+  useEffect(() => {
+    const toCheck = (tab === "medical"
+      ? visits
+      : visits.filter((visit) => expandedIds.includes(visit.id)))
+      .filter((visit) => visit.id && !prescriptionRequests.current.has(visit.id));
+    if (!toCheck.length) return;
+
+    for (const visit of toCheck) prescriptionRequests.current.add(visit.id);
+    setPrescriptionLookup((previous) => {
+      const next = { ...previous };
+      for (const visit of toCheck) next[visit.id] = { state: "loading" };
+      return next;
+    });
+
+    const readOne = async (visit) => {
+      try {
+        const response = await prescriptionService.getByAppointment(visit.id);
+        if (response?.success === false || response?.data?.success === false) {
+          throw new Error(response?.message || response?.data?.message || "Unable to retrieve the saved prescription.");
+        }
+        const prescription = historySavedPrescriptionFromResponse(response, visit.id);
+        if (isMounted.current) {
+          setPrescriptionLookup((previous) => ({
+            ...previous,
+            [visit.id]: prescription ? { state: "found", prescription } : { state: "none" },
+          }));
+        }
+      } catch (err) {
+        const notFound = historyPrescriptionNotFound(err);
+        if (isMounted.current) {
+          setPrescriptionLookup((previous) => ({
+            ...previous,
+            [visit.id]: notFound
+              ? { state: "none" }
+              : { state: "error", error: err?.message || "Request failed" },
+          }));
+        }
+      }
+    };
+
+    const fetchInBatches = async () => {
+      for (let i = 0; i < toCheck.length; i += 4) {
+        if (!isMounted.current) break;
+        await Promise.all(toCheck.slice(i, i + 4).map(readOne));
+      }
+    };
+    void fetchInBatches();
+  }, [tab, visits, expandedIds, prescriptionLookup]);
+
+  function retryPrescription(appointmentId) {
+    prescriptionRequests.current.delete(appointmentId);
+    setPrescriptionLookup((previous) => {
+      const next = { ...previous };
+      delete next[appointmentId];
+      return next;
+    });
+  }
+
+  const hasClinicalHistory = (visit) =>
+    Boolean(visit.medicalRecord || historyPrescriptionList(visit, prescriptionLookup[visit.id]).length);
+  const medicalCount = visits.filter(hasClinicalHistory).length;
+  const prescriptionCount = visits.reduce((sum, visit) =>
+    sum + historyPrescriptionList(visit, prescriptionLookup[visit.id]).length, 0);
+  const prescriptionChecksPending = tab === "medical" && visits.some((visit) =>
+    !prescriptionLookup[visit.id] || prescriptionLookup[visit.id]?.state === "loading");
+  const shownVisits = tab === "medical"
+    ? visits.filter((visit) => hasClinicalHistory(visit) ||
+      !prescriptionLookup[visit.id] || prescriptionLookup[visit.id]?.state === "loading" ||
+      prescriptionLookup[visit.id]?.state === "error")
+    : visits;
+  const hasMore = pagination.totalPages > pagination.page;
+  const pet = patient || subject.fallbackPatient || {};
+  const owner = pet.owner || subject.fallbackOwner || {};
+  const petAge = pet.approximateAge != null && pet.approximateAge !== ""
+    ? (typeof pet.approximateAge === "number"
+      ? `${pet.approximateAge} years (approx.)`
+      : String(pet.approximateAge))
+    : (pet.dateOfBirth ? rxAge(pet.dateOfBirth) : "");
+  const species = typeof pet.species === "string" ? pet.species : pet.species?.name;
+  const breed = typeof pet.breed === "string" ? pet.breed : pet.breed?.name;
+
+  function toggleExpanded(id) {
+    setExpandedIds((previous) => previous.includes(id)
+      ? previous.filter((current) => current !== id)
+      : [...previous, id]);
+  }
+
+  return createPortal(
+    <div className="patient-history-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="patient-history-modal" role="dialog" aria-modal="true" aria-labelledby="patient-history-title">
+        <div className="patient-history-toolbar">
+          <div className="d-flex align-items-center gap-3">
+            <div className="patient-history-toolbar-icon"><History size={22} /></div>
+            <div>
+              <h2 id="patient-history-title">Patient History</h2>
+              <p>Appointments, clinical examinations, treatments and follow-up care</p>
+            </div>
+          </div>
+          <button type="button" className="btn btn-light border d-flex gap-2 align-items-center" onClick={onClose}>
+            <X size={17} /> Close
+          </button>
+        </div>
+        <div className="patient-history-scroll">
+          <div className="patient-history-hero">
+            <div className="patient-history-avatar">
+              {pet.photoUrl ? <img src={pet.photoUrl} alt={`Patient ${pet.name || ""}`} /> : <PawPrint size={30} />}
+            </div>
+            <div className="patient-history-identity">
+              <h3>{pet.name || "Patient"}</h3>
+              <p>{[species, breed, petAge && `Age: ${petAge}`, pet.gender && formatEnum(pet.gender)].filter(Boolean).join(" · ") || "Patient profile"}</p>
+              <div className="patient-history-identity-meta">
+                {pet.petCode && <span>Patient ID: {pet.petCode}</span>}
+                {getOwnerName(owner) && <span><UserRound size={14} /> {getOwnerName(owner)}</span>}
+                {owner.phone && <span>Contact: {owner.phone}</span>}
+              </div>
+            </div>
+          </div>
+
+          <div className="patient-history-summary">
+            <div className="patient-history-stat"><span><CalendarDays size={16} /> Total appointments</span><strong>{loading ? "—" : summary.total}</strong></div>
+            <div className="patient-history-stat"><span><CheckCircle2 size={16} /> Completed visits</span><strong>{loading ? "—" : summary.completed}</strong></div>
+            <div className="patient-history-stat"><span><Stethoscope size={16} /> Visits with clinical records</span><strong>{loading ? "—" : medicalCount}</strong></div>
+            <div className="patient-history-stat"><span><Pill size={16} /> Prescriptions found</span><strong>{loading ? "—" : prescriptionCount}</strong></div>
+          </div>
+
+          <div className="patient-history-controls">
+            <div className="patient-history-tabs" role="tablist" aria-label="Patient history view">
+              <button type="button" role="tab" aria-selected={tab === "appointments"} className={tab === "appointments" ? "active" : ""} onClick={() => setTab("appointments")}>
+                <CalendarDays size={16} /> Appointment history
+              </button>
+              <button type="button" role="tab" aria-selected={tab === "medical"} className={tab === "medical" ? "active" : ""} onClick={() => setTab("medical")}>
+                <Stethoscope size={16} /> Medical records
+              </button>
+            </div>
+            {accessibleBranches.length > 1 && (
+              <label className="patient-history-branch">
+                <Building2 size={15} />
+                <select value={branchId} onChange={(event) => { setBranchId(event.target.value); setExpandedIds([]); }} aria-label="Filter patient history by branch">
+                  <option value="all">All accessible branches</option>
+                  {accessibleBranches.map((branch) => (
+                    <option key={branch.id} value={branch.id}>{branch.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+
+          <div className="patient-history-timeline-container">
+            {!loading && prescriptionChecksPending && (
+              <div className="patient-history-prescription-scan" role="status">
+                <LoaderCircle size={15} className="spin-icon" /> Checking saved prescriptions for loaded visits…
+              </div>
+            )}
+            {loading ? (
+              <div className="patient-history-state"><LoaderCircle size={30} className="spin-icon text-primary" /><strong>Loading patient history</strong><span>Retrieving appointment and medical records…</span></div>
+            ) : error && visits.length === 0 ? (
+              <div className="patient-history-state patient-history-error" role="alert"><AlertCircle size={28} /><strong>Unable to load patient history</strong><span>{error}</span><button type="button" className="btn btn-outline-primary btn-sm" onClick={() => loadHistory(1)}><RefreshCw size={14} /> Retry</button></div>
+            ) : (
+              <>
+                {error && <div className="alert alert-warning d-flex align-items-center gap-2"><AlertCircle size={17} /> {error} <button type="button" className="btn btn-sm btn-outline-secondary ms-auto" onClick={() => loadHistory(pagination.page + 1)}>Retry</button></div>}
+                {shownVisits.length > 0 ? (
+                  <div className="patient-history-timeline">
+                    {shownVisits.map((visit) => (
+                      <PatientHistoryVisit
+                        key={visit.id}
+                        visit={visit}
+                        showMedicalOnly={tab === "medical"}
+                        expanded={expandedIds.includes(visit.id)}
+                        onToggle={() => toggleExpanded(visit.id)}
+                        prescriptionLookup={prescriptionLookup[visit.id]}
+                        onRetryPrescription={retryPrescription}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="patient-history-state">
+                    {tab === "medical" ? <Stethoscope size={32} /> : <CalendarDays size={32} />}
+                    <strong>{tab === "medical" ? "No medical records or prescriptions in loaded visits" : "No appointments found"}</strong>
+                    <span>{tab === "medical" && hasMore
+                      ? "Older appointments may contain medical records or prescriptions. Load older visits to continue reviewing."
+                      : tab === "medical" ? "No medical records or saved prescriptions were found for these appointments." : "There are no appointment records for this patient in the selected branch."}</span>
+                  </div>
+                )}
+                {hasMore && (
+                  <div className="patient-history-load-more">
+                    <button type="button" className="btn btn-outline-primary" disabled={loadingMore} onClick={() => loadHistory(pagination.page + 1)}>
+                      {loadingMore ? <LoaderCircle size={16} className="spin-icon" /> : <ChevronDown size={16} />}
+                      {loadingMore ? "Loading older visits…" : "Load older visits"}
+                    </button>
+                    <small>{visits.length} of {pagination.total} appointments loaded</small>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+        <div className="patient-history-footer">
+          <span><AlertCircle size={14} /> Read-only clinical history · Access is restricted by your clinic permissions</span>
+          <button type="button" className="btn btn-primary btn-sm" onClick={onClose}>Done</button>
+        </div>
+      </div>
+      <style>{PATIENT_HISTORY_STYLES}</style>
+    </div>,
+    document.body,
+  );
+}
+
+const PATIENT_HISTORY_STYLES = `
+  .patient-history-overlay { position:fixed; inset:0; z-index:1500; padding:22px; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,.67); }
+  .patient-history-modal { width:min(1120px,100%); max-height:calc(100vh - 44px); display:flex; flex-direction:column; background:#f8fafc; border-radius:18px; overflow:hidden; box-shadow:0 25px 85px rgba(0,0,0,.25); color:#1e293b; }
+  .patient-history-toolbar { background:white; padding:17px 24px; border-bottom:1px solid #e2e8f0; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-shrink:0; }
+  .patient-history-toolbar h2 { margin:0 0 3px; font-size:19px; font-weight:750; }
+  .patient-history-toolbar p { margin:0; font-size:12px; color:#64748b; }
+  .patient-history-toolbar-icon { height:43px; width:43px; border-radius:12px; background:#eff6ff; color:#2563eb; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .patient-history-scroll { min-height:0; overflow:auto; padding:23px; }
+  .patient-history-hero { background:white; border:1px solid #e2e8f0; border-radius:16px; padding:20px; display:flex; align-items:center; gap:17px; margin-bottom:16px; }
+  .patient-history-avatar { width:70px; height:70px; background:#eff6ff; border:1px solid #dbeafe; color:#2563eb; border-radius:16px; display:flex; align-items:center; justify-content:center; overflow:hidden; flex-shrink:0; }
+  .patient-history-avatar img { width:100%; height:100%; object-fit:cover; }
+  .patient-history-identity { min-width:0; }
+  .patient-history-identity h3 { font-size:21px; line-height:1.3; margin:0 0 5px; font-weight:750; }
+  .patient-history-identity p { font-size:13px; color:#475569; margin:0 0 8px; }
+  .patient-history-identity-meta { display:flex; flex-wrap:wrap; gap:7px 15px; color:#64748b; font-size:12px; }
+  .patient-history-identity-meta span, .patient-history-meta span { display:inline-flex; align-items:center; gap:5px; }
+  .patient-history-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:13px; margin-bottom:18px; }
+  .patient-history-stat { background:white; border:1px solid #e2e8f0; border-radius:14px; padding:17px 18px; display:flex; flex-direction:column; gap:8px; }
+  .patient-history-stat span { display:flex; gap:8px; align-items:center; font-size:12px; color:#64748b; }
+  .patient-history-stat strong { font-size:27px; line-height:1; color:#0f172a; }
+  .patient-history-controls { display:flex; justify-content:space-between; align-items:center; gap:12px; margin:0 0 20px; flex-wrap:wrap; }
+  .patient-history-tabs { display:inline-flex; align-items:center; gap:4px; padding:4px; border:1px solid #e2e8f0; border-radius:11px; background:#eaf0f7; }
+  .patient-history-tabs button { border:0; background:none; display:inline-flex; align-items:center; gap:8px; border-radius:8px; padding:9px 14px; font-size:12px; font-weight:650; color:#64748b; }
+  .patient-history-tabs button.active { background:white; color:#2563eb; box-shadow:0 1px 6px rgba(15,23,42,.12); }
+  .patient-history-branch { display:flex; align-items:center; gap:8px; background:white; border:1px solid #e2e8f0; border-radius:9px; padding:7px 10px; color:#64748b; }
+  .patient-history-branch select { border:0; color:#334155; background:transparent; outline:none; font-size:12px; max-width:230px; }
+  .patient-history-timeline-container { background:white; border:1px solid #e2e8f0; padding:24px 22px; border-radius:16px; min-height:220px; }
+  .patient-history-timeline { display:flex; flex-direction:column; }
+  .patient-history-visit { position:relative; display:grid; grid-template-columns:24px minmax(0,1fr); gap:14px; }
+  .patient-history-rail { display:flex; flex-direction:column; align-items:center; position:relative; }
+  .patient-history-rail:after { content:""; position:absolute; top:20px; bottom:0; width:2px; background:#e2e8f0; }
+  .patient-history-visit:last-child .patient-history-rail:after { display:none; }
+  .patient-history-rail span { width:13px; height:13px; border-radius:50%; border:3px solid #fff; background:#94a3b8; box-shadow:0 0 0 2px #cbd5e1; margin-top:21px; position:relative; z-index:1; }
+  .patient-history-visit.has-record .patient-history-rail span { background:#2563eb; box-shadow:0 0 0 2px #bfdbfe; }
+  .patient-history-visit-card { border:1px solid #e2e8f0; border-radius:14px; padding:17px 18px; margin-bottom:17px; min-width:0; }
+  .patient-history-visit.has-record .patient-history-visit-card { border-color:#cbdffb; }
+  .patient-history-visit-top { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  .patient-history-date-icon { width:40px; height:40px; border-radius:11px; display:flex; align-items:center; justify-content:center; background:#f1f5f9; color:#64748b; flex-shrink:0; }
+  .patient-history-visit-title { margin:0; font-weight:750; font-size:14px; }
+  .patient-history-muted { font-size:11px; color:#64748b; }
+  .patient-history-meta { display:flex; flex-wrap:wrap; gap:7px 15px; font-size:11px; color:#64748b; }
+  .patient-history-record-chip, .patient-history-small-chip { border-radius:100px; padding:4px 9px; background:#eff6ff; font-size:10px; font-weight:650; color:#1d4ed8; display:inline-flex; gap:4px; align-items:center; white-space:nowrap; }
+  .patient-history-small-chip { background:#f1f5f9; color:#475569; }
+  .patient-history-expand { display:flex; gap:6px; align-items:center; white-space:nowrap; }
+  .patient-history-rotate { transform:rotate(180deg); }
+  .patient-history-diagnosis { padding:10px 13px; background:#f1f7ff; border:1px solid #dbeafe; border-radius:9px; font-size:12px; margin-top:14px; display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+  .patient-history-diagnosis strong { color:#1d4ed8; white-space:nowrap; }
+  .patient-history-diagnosis span { overflow-wrap:anywhere; }
+  .patient-history-preview, .patient-history-services { margin:11px 0 0; font-size:12px; color:#475569; overflow-wrap:anywhere; }
+  .patient-history-expanded { border-top:1px solid #e2e8f0; margin-top:16px; padding-top:2px; }
+  .patient-history-section { padding-top:17px; }
+  .patient-history-section h4 { display:flex; gap:8px; align-items:center; margin:0 0 12px; color:#334155; font-size:12px; font-weight:750; text-transform:uppercase; letter-spacing:.5px; }
+  .patient-history-section-body { border:1px solid #e2e8f0; background:#fcfdff; border-radius:10px; padding:13px; }
+  .patient-history-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+  .patient-history-field { min-width:0; }
+  .patient-history-field-wide { grid-column:1/-1; }
+  .patient-history-field > span { display:block; color:#64748b; font-size:10px; font-weight:600; margin-bottom:3px; }
+  .patient-history-field > div { font-size:12px; line-height:1.65; color:#1e293b; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .patient-history-no-clinical { margin-top:16px; padding:12px; background:#f8fafc; border-radius:9px; font-size:12px; color:#64748b; display:flex; align-items:center; gap:8px; }
+  .patient-history-rx { padding:10px 0; border-bottom:1px solid #e2e8f0; }
+  .patient-history-rx:last-child { border-bottom:0; }
+  .patient-history-rx-detailed { padding:14px; border:1px solid #dbeafe; border-radius:12px; background:#fff; margin-bottom:13px; }
+  .patient-history-rx-detailed:last-child { margin-bottom:0; }
+  .patient-history-rx-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; padding-bottom:12px; }
+  .patient-history-rx-heading strong { font-size:13px; }
+  .patient-history-rx-icon { width:34px; height:34px; background:#eff6ff; color:#2563eb; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; }
+  .patient-history-rx-subsection { border-top:1px solid #e2e8f0; padding-top:12px; margin-top:12px; }
+  .patient-history-rx-subsection h5 { color:#1e40af; font-size:11px; font-weight:750; text-transform:uppercase; letter-spacing:.5px; margin-bottom:12px; }
+  .patient-history-rx-minor-title { font-size:12px; font-weight:700; color:#475569; margin-bottom:6px; }
+  .patient-history-rx-simple-row { padding:9px 0; border-bottom:1px solid #f1f5f9; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .patient-history-rx-simple-row:last-child { border:0; }
+  .patient-history-rx-simple-row div { color:#475569; margin-top:4px; }
+  .patient-history-prescription-instructions { white-space:pre-wrap; }
+  .patient-history-prescription-scan, .patient-history-prescription-status { display:flex; align-items:center; gap:8px; color:#475569; font-size:12px; padding:11px 13px; background:#eff6ff; border:1px solid #dbeafe; border-radius:10px; margin-bottom:14px; }
+  .patient-history-prescription-status { margin-top:14px; margin-bottom:0; }
+  .patient-history-prescription-warning { background:#fffbeb; border-color:#fde68a; color:#92400e; }
+  .patient-history-med-table { font-size:11px; margin-bottom:5px; }
+  .patient-history-med-table thead th { color:#64748b; background:#f1f5f9; white-space:nowrap; }
+  .patient-history-rx-note { font-size:12px; margin-top:8px; }
+  .patient-history-state { min-height:180px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; text-align:center; color:#94a3b8; padding:18px; }
+  .patient-history-state strong { color:#475569; font-size:14px; }
+  .patient-history-state span { font-size:12px; color:#64748b; max-width:530px; }
+  .patient-history-error { color:#dc2626; }
+  .patient-history-load-more { display:flex; flex-direction:column; align-items:center; gap:8px; padding:15px; }
+  .patient-history-load-more button { display:inline-flex; align-items:center; gap:8px; }
+  .patient-history-load-more small { color:#94a3b8; }
+  .patient-history-footer { padding:12px 22px; background:#fff; border-top:1px solid #e2e8f0; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-shrink:0; }
+  .patient-history-footer span { display:flex; align-items:center; gap:8px; color:#64748b; font-size:11px; }
+  @media(max-width:700px) {
+    .patient-history-overlay { padding:5px; }
+    .patient-history-modal { max-height:calc(100vh - 10px); border-radius:12px; }
+    .patient-history-toolbar { padding:12px; }
+    .patient-history-toolbar h2 { font-size:16px; }
+    .patient-history-toolbar p { font-size:10px; }
+    .patient-history-scroll { padding:12px; }
+    .patient-history-hero { padding:13px; gap:12px; }
+    .patient-history-avatar { height:54px; width:54px; }
+    .patient-history-identity h3 { font-size:17px; }
+    .patient-history-summary { gap:7px; grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .patient-history-stat { padding:11px 9px; }
+    .patient-history-stat span { font-size:10px; }
+    .patient-history-stat strong { font-size:21px; }
+    .patient-history-controls { align-items:stretch; }
+    .patient-history-tabs { width:100%; }
+    .patient-history-tabs button { flex:1; justify-content:center; padding:9px 6px; font-size:11px; }
+    .patient-history-timeline-container { padding:14px 8px; }
+    .patient-history-visit { grid-template-columns:12px minmax(0,1fr); gap:9px; }
+    .patient-history-visit-card { padding:11px 10px; }
+    .patient-history-visit-top { flex-wrap:wrap; }
+    .patient-history-expand { margin-left:auto; }
+    .patient-history-fields { grid-template-columns:1fr; }
+    .patient-history-field-wide { grid-column:auto; }
+    .patient-history-footer { padding:10px; }
+  }
+`;
+
+// The print menu is rendered above overflowed tables and modal footers.
+// The same menu opens the saved prescription or an appointment-prefilled
+// consent form. Prescription printing requires a completed appointment.
+function AppointmentPrintMenu({ appointment, onSelect, compact = false, printing = false }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef(null);
+  const menuRef = useRef(null);
+
+  function toggle() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const box = buttonRef.current?.getBoundingClientRect();
+    if (!box) return;
+    const width = 276;
+    const estimatedHeight = 255;
+    const margin = 8;
+    const left = Math.max(margin, Math.min(box.right - width, window.innerWidth - width - margin));
+    const below = window.innerHeight - box.bottom;
+    const top = below >= estimatedHeight + margin
+      ? box.bottom + 6
+      : Math.max(margin, box.top - estimatedHeight - 6);
+    setPosition({ top, left });
+    setOpen(true);
+  }
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function onPointerDown(event) {
+      if (buttonRef.current?.contains(event.target) || menuRef.current?.contains(event.target)) return;
+      setOpen(false);
+    }
+    function onKeyDown(event) {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      buttonRef.current?.focus();
+    }
+    function closeOnScroll(event) {
+      if (menuRef.current?.contains(event.target)) return;
+      setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", closeOnScroll);
+    window.addEventListener("scroll", closeOnScroll, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", closeOnScroll);
+      window.removeEventListener("scroll", closeOnScroll, true);
+    };
+  }, [open]);
+
+  function choose(type) {
+    if (printing || (type === "prescription" && appointment?.status !== "COMPLETED")) return;
+    setOpen(false);
+    onSelect(type);
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={compact
+          ? "btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-1 text-nowrap"
+          : "btn btn-outline-secondary d-inline-flex align-items-center gap-2 text-nowrap"}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Print options for ${appointment?.appointmentNo || appointment?.id || "appointment"}`}
+        title="Choose what to print"
+        disabled={printing}
+        onClick={toggle}
+      >
+        {printing ? <LoaderCircle size={compact ? 15 : 16} className="spin-icon" /> : <Printer size={compact ? 15 : 16} />}
+        Print
+        <ChevronDown size={compact ? 13 : 15} />
+      </button>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label="Choose what to print"
+          className="bg-white border rounded-3 shadow-lg p-1"
+          style={{ position: "fixed", top: position.top, left: position.left, width: 276, maxWidth: "calc(100vw - 16px)", zIndex: 2500 }}
+        >
+          {[
+            { value: "prescription", title: "Print Prescription", icon: FileText },
+            { value: "surgery", title: "Surgery & Anaesthetic Consent", icon: FileText },
+            { value: "boarding", title: "Boarding Consent Form", icon: ClipboardList },
+            { value: "both", title: "Print Both Forms", icon: Printer },
+          ].map(({ value, title, icon: Icon }) => (
+            <button
+              key={value}
+              type="button"
+              role="menuitem"
+              className="btn btn-light border-0 w-100 d-flex align-items-center gap-2 text-start py-2 px-3"
+              style={{ minHeight: 45, fontSize: 13 }}
+              disabled={printing || (value === "prescription" && appointment?.status !== "COMPLETED")}
+              title={value === "prescription" && appointment?.status !== "COMPLETED"
+                ? "Prescription printing is available after completion" : title}
+              onClick={() => choose(value)}
+            >
+              <Icon size={17} className="text-primary flex-shrink-0" />
+              <span>
+                {title}
+                {value === "prescription" && appointment?.status !== "COMPLETED" && (
+                  <small className="d-block text-secondary" style={{ fontSize: 11 }}>
+                    Available after appointment completion
+                  </small>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 function AppointmentDetailsModal({
   appointment,
   loading,
@@ -2830,7 +4941,8 @@ function AppointmentDetailsModal({
   onCancel,
   canPrescribe,
   onPrescription,
-  onPrintPrescription,
+  onPatientHistory,
+  onPrint,
 }) {
   const actions = getAvailableActions(appointment?.status);
 
@@ -2869,13 +4981,8 @@ function AppointmentDetailsModal({
                     }
                   />
                   <DetailRow
-                    label="Date and time"
-                    value={formatDateTime(appointment.scheduledAt)}
-                  />
-
-                  <DetailRow
-                    label="Duration"
-                    value={`${appointment.durationMin} minutes`}
+                    label="Date"
+                    value={formatDateOnly(appointment.scheduledAt)}
                   />
 
                   <DetailRow
@@ -2987,6 +5094,17 @@ function AppointmentDetailsModal({
           Close
         </button>
 
+        {appointment && (appointment.petId || appointment.pet?.id) && (
+          <button
+            type="button"
+            className="btn btn-light border d-flex align-items-center gap-2"
+            onClick={onPatientHistory}
+          >
+            <History size={16} />
+            Patient History
+          </button>
+        )}
+
         {appointment && canPrescribe && (
           <button
             type="button"
@@ -2998,15 +5116,12 @@ function AppointmentDetailsModal({
           </button>
         )}
 
-        {appointment?.status === "COMPLETED" && (
-          <button
-            type="button"
-            className="btn btn-outline-primary d-flex align-items-center gap-2"
-            onClick={onPrintPrescription}
-          >
-            <Printer size={16} />
-            Print Prescription
-          </button>
+        {appointment && (
+          <AppointmentPrintMenu
+            appointment={appointment}
+            printing={actionLoading === `${appointment.id}:PRINT`}
+            onSelect={onPrint}
+          />
         )}
 
         {appointment &&
@@ -3113,6 +5228,189 @@ function FormSection({ title, children }) {
       <h6 className="fw-bold border-bottom pb-2 mb-3">{title}</h6>
       {children}
     </section>
+  );
+}
+
+// Searchable species combobox for walk-in appointments. Creation is persisted
+// immediately via POST /pets/species, then automatically selected in the form.
+function SpeciesSearchSelect({
+  value,
+  onChange,
+  options = [],
+  loading,
+  loadError,
+  createError,
+  creating,
+  onRetry,
+  onCreate,
+  error,
+  required,
+  col = "col-12",
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const term = String(value || "").trim();
+  const matches = (showAll || !term
+    ? options
+    : options.filter((species) =>
+        species.name.toLocaleLowerCase().includes(term.toLocaleLowerCase()),
+      )
+  ).slice(0, 50);
+  const exactMatch = matchingSpeciesName(options, term);
+  const canAdd = Boolean(term && !exactMatch && !loading && !creating);
+
+  function choose(name) {
+    onChange(name);
+    setIsOpen(false);
+    setShowAll(false);
+  }
+
+  async function create() {
+    if (!canAdd) return;
+    const successful = await onCreate(term);
+    if (successful) {
+      setIsOpen(false);
+      setShowAll(false);
+    }
+  }
+
+  return (
+    <div
+      className={`${col} position-relative`}
+      onBlur={(event) => {
+        // Moving focus to a dropdown button does not close the popup.
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setIsOpen(false);
+          setShowAll(false);
+        }
+      }}
+    >
+      <label htmlFor="walk-in-species-input" className="form-label">
+        Species {required && <span className="text-danger">*</span>}
+      </label>
+      <div className="input-group">
+        <input
+          id="walk-in-species-input"
+          type="text"
+          className={`form-control ${error ? "is-invalid" : ""}`}
+          value={value || ""}
+          autoComplete="off"
+          placeholder="Type or search species"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={isOpen}
+          aria-controls="walk-in-species-listbox"
+          aria-invalid={Boolean(error)}
+          disabled={creating}
+          onFocus={() => {
+            setIsOpen(true);
+            setShowAll(false);
+          }}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setShowAll(false);
+            setIsOpen(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setIsOpen(false);
+            }
+            if (event.key === "ArrowDown") {
+              setIsOpen(true);
+            }
+            if (event.key === "Enter" && isOpen) {
+              event.preventDefault(); // Do not accidentally submit the whole appointment.
+              if (exactMatch) choose(exactMatch);
+              else if (matches.length === 1) choose(matches[0].name);
+              else if (matches.length === 0 && canAdd) void create();
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="btn btn-outline-secondary"
+          title="Show all species"
+          aria-label="Show all species"
+          disabled={creating}
+          onClick={() => {
+            setShowAll(true);
+            setIsOpen((open) => !open);
+          }}
+        >
+          {loading ? <LoaderCircle size={16} className="spin-icon" /> : "▾"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-danger small mt-1">
+          {Array.isArray(error) ? error[0] : error}
+        </div>
+      )}
+      {createError && (
+        <div className="text-danger small mt-1" role="alert">
+          {createError}
+        </div>
+      )}
+
+      {isOpen && (
+        <div
+          id="walk-in-species-listbox"
+          role="listbox"
+          aria-label="Species options"
+          className="position-absolute bg-white border rounded-3 shadow-sm w-100 mt-1"
+          style={{ zIndex: 1100, maxHeight: 240, overflowY: "auto", left: 0 }}
+        >
+          {loading ? (
+            <div className="text-secondary small p-3">Loading species…</div>
+          ) : (
+            <>
+              {loadError && (
+                <div className="px-3 py-2 text-danger small">
+                  {loadError}{" "}
+                  <button type="button" className="btn btn-link btn-sm p-0" onClick={onRetry}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              {matches.map((species) => (
+                <button
+                  key={species.id || species.name}
+                  type="button"
+                  role="option"
+                  aria-selected={species.name === value}
+                  className="btn btn-light rounded-0 w-100 text-start px-3 py-2 border-0"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => choose(species.name)}
+                >
+                  {species.name}
+                </button>
+              ))}
+              {matches.length === 0 && !loadError && (
+                <div className="text-secondary small px-3 py-2">
+                  {term ? `No species found for “${term}”.` : "No species found."}
+                </div>
+              )}
+              {canAdd && (
+                <button
+                  type="button"
+                  className="btn btn-light text-primary fw-semibold rounded-0 w-100 text-start px-3 py-2 border-top d-flex align-items-center gap-2"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => void create()}
+                >
+                  <Plus size={16} /> Add species “{term}”
+                </button>
+              )}
+              {creating && (
+                <div className="text-secondary small px-3 py-2">
+                  <LoaderCircle size={14} className="spin-icon me-2" /> Saving species…
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -3465,33 +5763,33 @@ function formatEnum(value) {
     .join(" ");
 }
 
-function formatDateTime(value) {
+function formatDateOnly(value) {
   if (!value) return "—";
-
-  return new Date(value).toLocaleString([], {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString([], {
     year: "numeric",
     month: "short",
     day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
   });
 }
 
 function formatDateInput(value) {
   const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
   const offset = date.getTimezoneOffset();
-
   return new Date(date.getTime() - offset * 60 * 1000)
     .toISOString()
     .slice(0, 10);
 }
 
-function formatTimeInput(value) {
-  const date = new Date(value);
-
-  return `${String(date.getHours()).padStart(2, "0")}:${String(
-    date.getMinutes(),
-  ).padStart(2, "0")}`;
+// Temporary DateTime adapter for APIs that have not adopted date-only visits.
+// This is NOT a time chosen by staff and must not be used to enforce time slots.
+function toDateOnlyCompatibleTimestamp(dateValue) {
+  const [year, month, day] = String(dateValue).split("-").map(Number);
+  const date = new Date(year, month - 1, day, 12, 0, 0, 0);
+  const now = new Date();
+  return formatDateInput(now) === dateValue ? now.toISOString() : date.toISOString();
 }
 
 export default Appointments;

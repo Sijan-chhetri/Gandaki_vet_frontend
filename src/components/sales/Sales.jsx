@@ -35,6 +35,68 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import "./sales.css";
 
+// The app's production API should be configured using VITE_API_BASE_URL.
+// The fallback mirrors the existing development API configuration.
+const SALES_API_BASE = (
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://localhost:5001/api/v1"
+).replace(/\/+$/, "");
+
+const findAccessToken = () => {
+  const storages = [window.localStorage, window.sessionStorage];
+  for (const storage of storages) {
+    for (const key of ["accessToken", "token", "authToken", "jwt"]) {
+      const token = storage.getItem(key);
+      if (token) return token;
+    }
+    for (const key of ["auth", "user", "authUser", "authData"]) {
+      try {
+        const data = JSON.parse(storage.getItem(key) || "null");
+        const token =
+          data?.accessToken || data?.token || data?.jwt ||
+          data?.data?.accessToken || data?.data?.token ||
+          data?.user?.accessToken || data?.user?.token;
+        if (token) return token;
+      } catch {
+        // Ignore invalid cached auth values.
+      }
+    }
+  }
+  return null;
+};
+
+// Used only for the two new endpoints if invoices.service.js has no matching
+// methods yet. Other invoice actions keep using the existing service.
+async function salesApiRequest(path, { method = "GET", body } = {}) {
+  const token = findAccessToken();
+  const response = await fetch(`${SALES_API_BASE}${path}`, {
+    method,
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+
+  const result = await response.json().catch(() => null);
+  if (!response.ok || result?.success === false) {
+    throw new Error(
+      result?.message || `Request failed (${response.status})`
+    );
+  }
+  return result;
+}
+
+const responseArray = (response) =>
+  Array.isArray(response?.data) ? response.data :
+  Array.isArray(response?.data?.items) ? response.data.items :
+  Array.isArray(response?.data?.branches) ? response.data.branches :
+  Array.isArray(response?.items) ? response.items :
+  Array.isArray(response?.branches) ? response.branches : [];
+
+
 const INVOICE_STATUSES = [
   "DRAFT",
   "ISSUED",
@@ -202,7 +264,7 @@ const getInvoiceCustomer = (invoice) => {
         : customer.petName ||
           invoice?.walkInPetName ||
           appointment.walkInPetName ||
-          "Walk-in pet",
+          "—",
     petSpecies:
       customer.petSpecies ||
       invoice?.walkInPetSpecies ||
@@ -231,11 +293,27 @@ const emptyRetailLine = () => ({
 });
 
 const emptyRetailForm = () => ({
+  customerType: "WALK_IN", // REGISTERED, WALK_IN or ANONYMOUS
   ownerId: "",
+  branchId: "",
+  walkInOwnerName: "",
+  walkInOwnerPhone: "",
+  walkInOwnerAddress: "",
+  walkInPetName: "",
+  walkInPetSpecies: "",
+  walkInPetBreed: "",
+  walkInPetGender: "",
+  walkInPetAge: "",
+  walkInPetWeight: "",
   dueAt: "",
   notes: "",
   discountAmount: 0,
-  issueImmediately: false,
+  saleMode: "DRAFT", // DRAFT, ISSUE, CHECKOUT
+  paymentMethodId: "",
+  checkoutPaymentType: "FULL", // FULL or PARTIAL
+  checkoutAmount: "",
+  transactionRef: "",
+  paymentNotes: "",
   items: [emptyRetailLine()],
 });
 
@@ -313,11 +391,15 @@ function Sales() {
     useState(false);
   const [retailForm, setRetailForm] =
     useState(emptyRetailForm());
+  const [branches, setBranches] = useState([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
   const [owners, setOwners] =
     useState([]);
   const [ownerSearch, setOwnerSearch] =
     useState("");
   const [pets, setPets] =
+    useState([]);
+  const [selectedInvoicePets, setSelectedInvoicePets] =
     useState([]);
   const [inventoryItems, setInventoryItems] =
     useState([]);
@@ -444,8 +526,47 @@ function Sales() {
     filters.dateTo,
   ]);
 
+  // Branch choices are required by the branch-scoped invoice backend.
   useEffect(() => {
     if (!showRetailModal) return;
+    let active = true;
+
+    const loadBranches = async () => {
+      try {
+        setBranchesLoading(true);
+        const response = typeof invoiceService.getBranches === "function"
+          ? await invoiceService.getBranches()
+          : await salesApiRequest("/branches");
+        if (!active) return;
+        const activeBranches = responseArray(response).filter(
+          (branch) => branch && branch.isActive !== false
+        );
+        setBranches(activeBranches);
+        setRetailForm((previous) => ({
+          ...previous,
+          branchId: activeBranches.some((branch) => branch.id === previous.branchId)
+            ? previous.branchId
+            : activeBranches.length === 1 ? activeBranches[0].id : "",
+        }));
+        if (!activeBranches.length) {
+          setError("No active branches available for invoicing. Check branch permissions.");
+        }
+      } catch (err) {
+        if (active) {
+          setBranches([]);
+          setError(err.message || "Unable to load branches.");
+        }
+      } finally {
+        if (active) setBranchesLoading(false);
+      }
+    };
+
+    loadBranches();
+    return () => { active = false; };
+  }, [showRetailModal]);
+
+  useEffect(() => {
+    if (!showRetailModal || retailForm.customerType !== "REGISTERED") return;
 
     const timer =
       window.setTimeout(
@@ -477,71 +598,68 @@ function Sales() {
   }, [
     showRetailModal,
     ownerSearch,
+    retailForm.customerType,
   ]);
 
   useEffect(() => {
-    if (!showRetailModal && !addItemsInvoice) {
+    if (!showRetailModal && !addItemsInvoice) return;
+    const branchId = addItemsInvoice?.branchId || retailForm.branchId;
+    if (!branchId) {
+      setInventoryItems([]);
       return;
     }
 
-    const timer = window.setTimeout(
-      async () => {
-        try {
-          const response =
-            await invoiceService.getInventoryItems({
-              search: inventorySearch.trim(),
-              limit: 100,
-              page: 1,
-              isActive: true,
-            });
-
-          console.log(
-            "Inventory API response:",
-            response,
-          );
-
-          const items =
-            Array.isArray(response?.data)
-              ? response.data
-              : Array.isArray(
-                response?.data?.items,
-              )
-                ? response.data.items
-                : Array.isArray(
-                  response?.items,
-                )
-                  ? response.items
-                  : [];
-
-          setInventoryItems(items);
-        } catch (requestError) {
-          console.error(
-            "Inventory loading error:",
-            requestError,
-          );
-
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await invoiceService.getInventoryItems({
+          search: inventorySearch.trim(),
+          branchId,
+          limit: 100,
+          page: 1,
+          isActive: true,
+        });
+        if (!active) return;
+        // Never display or permit sale of inventory from another branch.
+        // Keep already selected products cached while the user searches for more.
+        const fetched = responseArray(response).filter(
+          (item) => item.branchId === branchId && item.isActive !== false
+        );
+        const selectedIds = new Set([
+          ...retailForm.items.map((line) => line.inventoryItemId),
+          ...addItemsLines.map((line) => line.inventoryItemId),
+        ]);
+        setInventoryItems((previous) => [
+          ...fetched,
+          ...previous.filter((item) =>
+            item.branchId === branchId &&
+            selectedIds.has(item.id) &&
+            !fetched.some((next) => next.id === item.id)
+          ),
+        ]);
+      } catch (requestError) {
+        if (active) {
           setInventoryItems([]);
-
-          setError(
-            requestError.message ||
-            "Unable to load inventory.",
-          );
+          setError(requestError.message || "Unable to load inventory.");
         }
-      },
-      250,
-    );
+      }
+    }, 250);
 
-    return () =>
+    return () => {
+      active = false;
       window.clearTimeout(timer);
+    };
   }, [
     showRetailModal,
-    addItemsInvoice,
+    addItemsInvoice?.id,
+    addItemsInvoice?.branchId,
     inventorySearch,
+    retailForm.branchId,
   ]);
 
-useEffect(() => {
+  useEffect(() => {
   const loadPets = async () => {
-    if (!retailForm.ownerId) {
+    if (retailForm.customerType !== "REGISTERED" || !retailForm.ownerId) {
       setPets([]);
       return;
     }
@@ -595,7 +713,28 @@ useEffect(() => {
   };
 
   loadPets();
-}, [retailForm.ownerId]);
+}, [retailForm.ownerId, retailForm.customerType]);
+
+  // Pet choices for adding items to an existing registered-owner invoice.
+  useEffect(() => {
+    const ownerId = addItemsInvoice?.ownerId;
+    if (!ownerId) {
+      setSelectedInvoicePets([]);
+      return;
+    }
+    let active = true;
+    invoiceService.getOwnerPets(ownerId, { page: 1, limit: 100 })
+      .then((response) => {
+        if (active) setSelectedInvoicePets(responseArray(response));
+      })
+      .catch((err) => {
+        if (active) {
+          setSelectedInvoicePets([]);
+          setError(err.message || "Unable to load invoice owner's pets.");
+        }
+      });
+    return () => { active = false; };
+  }, [addItemsInvoice?.ownerId]);
 
   const retailSubtotal = useMemo(
     () =>
@@ -685,7 +824,10 @@ useEffect(() => {
     );
 
   const openRetailInvoice = () => {
-    setRetailForm(emptyRetailForm());
+    setRetailForm({
+      ...emptyRetailForm(),
+      branchId: branches.length === 1 ? branches[0].id : "",
+    });
     setOwnerSearch("");
     setInventorySearch("");
     setPets([]);
@@ -735,115 +877,153 @@ useEffect(() => {
     }));
   };
 
-  const submitRetailInvoice = async (
-    event,
-  ) => {
+  const submitRetailInvoice = async (event) => {
     event.preventDefault();
 
-    if (!retailForm.ownerId) {
-      setError(
-        "Select the pet owner or customer.",
-      );
+    if (!retailForm.branchId) {
+      setError("Choose the branch where these products are sold.");
+      return;
+    }
+    if (retailForm.customerType === "REGISTERED" && !retailForm.ownerId) {
+      setError("Select a registered pet owner or switch to walk-in checkout.");
       return;
     }
 
-    const validLines =
-      retailForm.items.filter(
-        (line) =>
-          line.inventoryItemId &&
-          Number(line.quantity) > 0,
-      );
-
-    if (!validLines.length) {
-      setError(
-        "Add at least one inventory item.",
-      );
+    if (retailForm.items.some((line) =>
+      !line.inventoryItemId || !Number.isFinite(Number(line.quantity)) ||
+      Number(line.quantity) <= 0 ||
+      Math.abs(Number(line.quantity) * 100 - Math.round(Number(line.quantity) * 100)) > 0.000001 ||
+      !Number.isFinite(Number(line.discountAmount)) || Number(line.discountAmount) < 0 ||
+      Math.abs(Number(line.discountAmount) * 100 - Math.round(Number(line.discountAmount) * 100)) > 0.000001
+    )) {
+      setError("Every row must have a product, a positive quantity and a valid discount.");
       return;
     }
 
-    for (const line of validLines) {
-      const item =
-        inventoryItems.find(
-          (entry) =>
-            entry.id ===
-            line.inventoryItemId,
-        );
-
-      if (
-        item &&
-        Number(line.quantity) >
-        Number(item.currentStock)
-      ) {
-        setError(
-          `${item.name} has only ${item.currentStock} ${item.unit || "units"} in stock.`,
-        );
+    const quantities = new Map();
+    for (const line of retailForm.items) {
+      const item = inventoryItems.find((entry) => entry.id === line.inventoryItemId);
+      if (!item || item.branchId !== retailForm.branchId) {
+        setError("A product is unavailable in the selected branch. Refresh inventory.");
+        return;
+      }
+      const gross = Number(item.sellingPrice) * Number(line.quantity);
+      if (Number(line.discountAmount || 0) > gross) {
+        setError(`Discount exceeds the price of ${item.name}.`);
+        return;
+      }
+      quantities.set(line.inventoryItemId,
+        (quantities.get(line.inventoryItemId) || 0) + Number(line.quantity)
+      );
+    }
+    for (const [itemId, quantity] of quantities) {
+      const item = inventoryItems.find((entry) => entry.id === itemId);
+      if (quantity > Number(item.currentStock)) {
+        setError(`${item.name} has only ${item.currentStock} ${item.unit || "units"} in stock (including all selected rows).`);
         return;
       }
     }
 
+    if (retailForm.saleMode !== "DRAFT" && retailTotal <= 0) {
+      setError("Invoice total must be greater than zero to issue or check out.");
+      return;
+    }
+    if (retailForm.saleMode === "CHECKOUT") {
+      if (!retailForm.paymentMethodId) {
+        setError("Select a payment method to complete checkout.");
+        return;
+      }
+      if (retailForm.checkoutPaymentType === "PARTIAL") {
+        const amount = Number(retailForm.checkoutAmount);
+        if (!Number.isFinite(amount) || amount <= 0 || amount >= retailTotal) {
+          setError("For partial payment enter an amount greater than zero and less than the invoice total.");
+          return;
+        }
+      }
+    }
+
+    const isRegistered = retailForm.customerType === "REGISTERED";
+    const isWalkIn = retailForm.customerType === "WALK_IN";
+    const payload = {
+      branchId: retailForm.branchId,
+      ...(isRegistered
+        ? { ownerId: retailForm.ownerId }
+        : {
+            ownerId: null,
+            walkInOwnerName: isWalkIn ? retailForm.walkInOwnerName.trim() || "Walk-in customer" : "Walk-in customer",
+            walkInOwnerPhone: isWalkIn ? retailForm.walkInOwnerPhone.trim() || null : null,
+            walkInOwnerAddress: isWalkIn ? retailForm.walkInOwnerAddress.trim() || null : null,
+            ...(isWalkIn ? {
+              walkInPetName: retailForm.walkInPetName.trim() || null,
+              walkInPetSpecies: retailForm.walkInPetSpecies.trim() || null,
+              walkInPetBreed: retailForm.walkInPetBreed.trim() || null,
+              walkInPetGender: retailForm.walkInPetGender || null,
+              walkInPetAge: retailForm.walkInPetAge.trim() || null,
+              walkInPetWeight: retailForm.walkInPetWeight === "" ? null : Number(retailForm.walkInPetWeight),
+            } : {}),
+          }),
+      dueAt: retailForm.dueAt || null,
+      notes: retailForm.notes.trim() || "Retail inventory sale from Gandaki Vet & Pet",
+      discountAmount: Number(retailForm.discountAmount || 0),
+      items: retailForm.items.map((line) => ({
+        inventoryItemId: line.inventoryItemId,
+        ...(isRegistered && line.petId ? { petId: line.petId } : {}),
+        quantity: Number(line.quantity),
+        discountAmount: Number(line.discountAmount || 0),
+      })),
+    };
+
+    let createdDraft = null;
     try {
       setSaving(true);
       setError("");
       setSuccess("");
+      setActionLoading(retailForm.saleMode === "CHECKOUT" ? "checkout" : "create");
 
-      const response =
-        await invoiceService.createInvoice({
-          ownerId:
-            retailForm.ownerId,
-          dueAt:
-            retailForm.dueAt ||
-            null,
-          notes:
-            retailForm.notes.trim() ||
-            "Retail inventory sale from Gandaki vet and pet",
-          discountAmount:
-            Number(
-              retailForm.discountAmount ||
-              0,
-            ),
-          items: validLines.map(
-            (line) => ({
-              inventoryItemId:
-                line.inventoryItemId,
-              petId:
-                line.petId || null,
-              quantity:
-                Number(line.quantity),
-              discountAmount:
-                Number(
-                  line.discountAmount ||
-                  0,
-                ),
-            }),
-          ),
-        });
+      if (retailForm.saleMode === "CHECKOUT") {
+        const checkoutPayload = {
+          ...payload,
+          paymentMethodId: retailForm.paymentMethodId,
+          ...(retailForm.checkoutPaymentType === "PARTIAL"
+            ? { amount: Number(retailForm.checkoutAmount) }
+            : {}),
+          transactionRef: retailForm.transactionRef.trim() || null,
+          paymentNotes: retailForm.paymentNotes.trim() || null,
+        };
+        const response = typeof invoiceService.checkoutInvoice === "function"
+          ? await invoiceService.checkoutInvoice(checkoutPayload)
+          : typeof invoiceService.checkout === "function"
+            ? await invoiceService.checkout(checkoutPayload)
+            : await salesApiRequest("/invoices/checkout", {
+                method: "POST", body: checkoutPayload,
+              });
+        if (response.data?.id) {
+          setSelectedInvoice(response.data);
+        }
+        setSuccess(`Checkout completed. Invoice ${response.data?.invoiceNumber || ""} issued, stock deducted and payment recorded.`);
+      } else {
+        const response = await invoiceService.createInvoice(payload);
+        createdDraft = response.data;
 
-      const invoice =
-        response.data;
-
-      if (
-        retailForm.issueImmediately
-      ) {
-        await invoiceService.issue(
-          invoice.id,
-        );
+        if (retailForm.saleMode === "ISSUE") {
+          await invoiceService.issue(createdDraft.id);
+          setSuccess(`Invoice ${createdDraft.invoiceNumber} issued. Inventory stock deducted; payment can be recorded from its invoice actions.`);
+        } else {
+          setSuccess(`Retail draft ${createdDraft.invoiceNumber} created successfully.`);
+        }
       }
 
       setShowRetailModal(false);
-      setSuccess(
-        retailForm.issueImmediately
-          ? "Retail invoice created and issued. Inventory stock was deducted."
-          : "Retail draft invoice created successfully.",
-      );
-
+      setRetailForm(emptyRetailForm());
+      setInventorySearch("");
       await reload(1);
     } catch (requestError) {
-      setError(
-        requestError.message ||
-        "Unable to create retail invoice.",
-      );
+      setError(createdDraft && retailForm.saleMode === "ISSUE"
+        ? `Draft ${createdDraft.invoiceNumber} was created but issuing failed: ${requestError.message}. Do not create a duplicate; issue this draft from the invoice list.`
+        : requestError.message || "Unable to create retail invoice.");
     } finally {
       setSaving(false);
+      setActionLoading("");
     }
   };
 
@@ -2443,7 +2623,7 @@ useEffect(() => {
 
       {showRetailModal && (
         <Modal
-          title="New retail inventory invoice"
+          title="New retail invoice / walk-in checkout"
           size="modal-xl"
           onClose={() =>
             setShowRetailModal(false)
@@ -2462,111 +2642,222 @@ useEffect(() => {
               the printed invoice.
             </div>
 
-            <div className="row g-3 mb-4">
-              <div className="col-lg-5">
-                <label className="form-label fw-semibold">
-                  Search owner/customer
-                </label>
-
-                <input
-                  type="search"
-                  className="form-control mb-2"
-                  placeholder="Search by name, phone or owner code"
-                  value={ownerSearch}
-                  onChange={(event) =>
-                    setOwnerSearch(
-                      event.target.value,
-                    )
-                  }
-                />
-
-                <select
-                  className="form-select"
-                  value={
-                    retailForm.ownerId
-                  }
-                  onChange={(event) =>
-                    setRetailForm(
-                      (previous) => ({
+            <div className="mb-3">
+              <label className="form-label fw-semibold d-block">Customer type</label>
+              <div className="d-flex flex-wrap gap-2">
+                {[
+                  ["REGISTERED", "Registered owner"],
+                  ["WALK_IN", "Walk-in customer"],
+                  ["ANONYMOUS", "Anonymous retail sale"],
+                ].map(([type, label]) => (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`btn ${retailForm.customerType === type ? "btn-primary" : "btn-outline-primary"}`}
+                    onClick={() => {
+                      setRetailForm((previous) => ({
                         ...previous,
-                        ownerId:
-                          event.target.value,
-                        items:
-                          previous.items.map(
-                            (line) => ({
-                              ...line,
-                              petId: "",
-                            }),
-                          ),
-                      }),
-                    )
-                  }
-                  required
-                >
-                  <option value="">
-                    Select owner/customer
-                  </option>
+                        customerType: type,
+                        ownerId: type === "REGISTERED" ? previous.ownerId : "",
+                        items: previous.items.map((line) => ({ ...line, petId: "" })),
+                      }));
+                      setPets([]);
+                      setError("");
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <small className="text-secondary d-block mt-2">
+                Walk-in purchases do not create a registered owner record. Customer and pet information is optional.
+              </small>
+            </div>
 
-                  {owners.map((owner) => (
-                    <option
-                      key={owner.id}
-                      value={owner.id}
-                    >
-                      {ownerName(owner)}
-                      {owner.phone
-                        ? ` — ${owner.phone}`
-                        : ""}
+            <div className="row g-3 mb-4">
+              <div className="col-lg-4">
+                <label className="form-label fw-semibold">Selling branch *</label>
+                <select
+                  required
+                  className="form-select"
+                  value={retailForm.branchId}
+                  onChange={(event) => {
+                    const branchId = event.target.value;
+                    setRetailForm((previous) => ({
+                      ...previous,
+                      branchId,
+                      items: [emptyRetailLine()],
+                    }));
+                    setInventoryItems([]);
+                    setInventorySearch("");
+                  }}
+                >
+                  <option value="">{branchesLoading ? "Loading branches..." : "Select branch"}</option>
+                  {branches.map((branch) => (
+                    <option key={branch.id} value={branch.id}>
+                      {branch.name}{branch.isMain ? " (Main)" : ""}
                     </option>
                   ))}
                 </select>
+                <small className="text-secondary">Only products from this branch can be sold.</small>
               </div>
-
-              <div className="col-md-3">
-                <label className="form-label fw-semibold">
-                  Due date
-                </label>
-
+              <div className="col-lg-4">
+                <label className="form-label fw-semibold">Due date</label>
                 <input
                   type="date"
                   className="form-control"
                   value={retailForm.dueAt}
                   onChange={(event) =>
-                    setRetailForm(
-                      (previous) => ({
-                        ...previous,
-                        dueAt:
-                          event.target.value,
-                      }),
-                    )
+                    setRetailForm((previous) => ({ ...previous, dueAt: event.target.value }))
                   }
                 />
               </div>
-
-              <div className="col-md-4">
-                <label className="form-label fw-semibold">
-                  Invoice discount
-                </label>
-
+              <div className="col-lg-4">
+                <label className="form-label fw-semibold">Invoice discount</label>
                 <input
                   type="number"
+                  className="form-control"
                   min="0"
                   step="0.01"
-                  className="form-control"
-                  value={
-                    retailForm.discountAmount
-                  }
+                  value={retailForm.discountAmount}
                   onChange={(event) =>
-                    setRetailForm(
-                      (previous) => ({
-                        ...previous,
-                        discountAmount:
-                          event.target.value,
-                      }),
-                    )
+                    setRetailForm((previous) => ({ ...previous, discountAmount: event.target.value }))
                   }
                 />
               </div>
             </div>
+
+            {retailForm.customerType === "REGISTERED" && (
+              <div className="row g-3 mb-4">
+                <div className="col-lg-6">
+                  <label className="form-label fw-semibold">Search registered owner</label>
+                  <input
+                    type="search"
+                    className="form-control mb-2"
+                    placeholder="Search by name, phone or owner code"
+                    value={ownerSearch}
+                    onChange={(event) => setOwnerSearch(event.target.value)}
+                  />
+                  <select
+                    className="form-select"
+                    value={retailForm.ownerId}
+                    onChange={(event) => {
+                      setRetailForm((previous) => ({
+                        ...previous,
+                        ownerId: event.target.value,
+                        items: previous.items.map((line) => ({ ...line, petId: "" })),
+                      }));
+                    }}
+                    required
+                  >
+                    <option value="">Select registered owner</option>
+                    {owners.map((owner) => (
+                      <option key={owner.id} value={owner.id}>
+                        {ownerName(owner)}{owner.phone ? ` — ${owner.phone}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {retailForm.customerType === "WALK_IN" && (
+              <>
+                <div className="row g-3 mb-3">
+                  <div className="col-lg-4">
+                    <label className="form-label fw-semibold">Customer name (optional)</label>
+                    <input
+                      className="form-control"
+                      placeholder="Walk-in customer"
+                      value={retailForm.walkInOwnerName}
+                      onChange={(event) => setRetailForm((previous) => ({
+                        ...previous, walkInOwnerName: event.target.value,
+                      }))}
+                    />
+                  </div>
+                  <div className="col-lg-4">
+                    <label className="form-label fw-semibold">Phone (optional)</label>
+                    <input
+                      type="tel"
+                      className="form-control"
+                      placeholder="Contact number"
+                      value={retailForm.walkInOwnerPhone}
+                      onChange={(event) => setRetailForm((previous) => ({
+                        ...previous, walkInOwnerPhone: event.target.value,
+                      }))}
+                    />
+                  </div>
+                  <div className="col-lg-4">
+                    <label className="form-label fw-semibold">Address (optional)</label>
+                    <input
+                      className="form-control"
+                      placeholder="Customer address"
+                      value={retailForm.walkInOwnerAddress}
+                      onChange={(event) => setRetailForm((previous) => ({
+                        ...previous, walkInOwnerAddress: event.target.value,
+                      }))}
+                    />
+                  </div>
+                </div>
+                <div className="border rounded-3 p-3 mb-4">
+                  <div className="fw-semibold mb-2">Walk-in pet details (optional)</div>
+                  <div className="row g-3">
+                    {[
+                      ["walkInPetName", "Pet name"],
+                      ["walkInPetSpecies", "Species"],
+                      ["walkInPetBreed", "Breed"],
+                      ["walkInPetAge", "Age"],
+                    ].map(([field, label]) => (
+                      <div key={field} className="col-md-3">
+                        <label className="form-label small">{label}</label>
+                        <input
+                          className="form-control"
+                          value={retailForm[field]}
+                          onChange={(event) => setRetailForm((previous) => ({
+                            ...previous, [field]: event.target.value,
+                          }))}
+                        />
+                      </div>
+                    ))}
+                    <div className="col-md-3">
+                      <label className="form-label small">Gender</label>
+                      <select
+                        className="form-select"
+                        value={retailForm.walkInPetGender}
+                        onChange={(event) => setRetailForm((previous) => ({
+                          ...previous, walkInPetGender: event.target.value,
+                        }))}
+                      >
+                        <option value="">Not specified</option>
+                        <option value="MALE">Male</option>
+                        <option value="FEMALE">Female</option>
+                        <option value="UNKNOWN">Unknown</option>
+                      </select>
+                    </div>
+                    <div className="col-md-3">
+                      <label className="form-label small">Weight (kg)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="999999"
+                        step="0.01"
+                        className="form-control"
+                        value={retailForm.walkInPetWeight}
+                        onChange={(event) => setRetailForm((previous) => ({
+                          ...previous, walkInPetWeight: event.target.value,
+                        }))}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {retailForm.customerType === "ANONYMOUS" && (
+              <div className="alert alert-light border mb-4">
+                Anonymous retail sale: no owner registration, name, phone or pet is required.
+              </div>
+            )}
 
             <div className="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-3">
               <div>
@@ -2575,8 +2866,7 @@ useEffect(() => {
                 </h6>
 
                 <small className="text-secondary">
-                  Stock is deducted only when
-                  the invoice is issued.
+                  Stock is deducted on issue or direct checkout, not when saving a draft.
                 </small>
               </div>
 
@@ -2709,11 +2999,11 @@ useEffect(() => {
                                 )
                               }
                               disabled={
-                                !retailForm.ownerId
+                                retailForm.customerType !== "REGISTERED" || !retailForm.ownerId
                               }
                             >
                               <option value="">
-                                General / no pet
+                                {retailForm.customerType === "WALK_IN" ? "Walk-in pet details above / no pet" : "General / no pet"}
                               </option>
 
                               {pets.map((pet) => (
@@ -2853,34 +3143,105 @@ useEffect(() => {
                   placeholder="Optional invoice note"
                 />
 
-                <div className="form-check mt-3">
-                  <input
-                    className="form-check-input"
-                    type="checkbox"
-                    id="issueImmediately"
-                    checked={
-                      retailForm.issueImmediately
-                    }
-                    onChange={(event) =>
-                      setRetailForm(
-                        (previous) => ({
-                          ...previous,
-                          issueImmediately:
-                            event.target
-                              .checked,
-                        }),
-                      )
-                    }
-                  />
-
-                  <label
-                    className="form-check-label"
-                    htmlFor="issueImmediately"
-                  >
-                    Issue immediately and
-                    deduct inventory stock
-                  </label>
+                <div className="mt-4">
+                  <label className="form-label fw-semibold d-block">Invoice action</label>
+                  {[
+                    ["DRAFT", "Save draft", "No stock deducted yet"],
+                    ["ISSUE", "Create and issue", "Deduct stock, then record payment later"],
+                    ["CHECKOUT", "Direct checkout", "Deduct stock and record payment together"],
+                  ].map(([value, label, hint]) => (
+                    <label key={value} className="d-flex align-items-start gap-2 mb-2">
+                      <input
+                        type="radio"
+                        className="form-check-input mt-1"
+                        name="retail-sale-mode"
+                        checked={retailForm.saleMode === value}
+                        onChange={() => setRetailForm((previous) => ({
+                          ...previous, saleMode: value,
+                        }))}
+                      />
+                      <span>
+                        <strong className="d-block">{label}</strong>
+                        <small className="text-secondary">{hint}</small>
+                      </span>
+                    </label>
+                  ))}
                 </div>
+
+                {retailForm.saleMode === "CHECKOUT" && (
+                  <div className="border rounded-3 p-3 mt-3">
+                    <h6 className="fw-bold">Checkout payment</h6>
+                    <label className="form-label fw-semibold">Payment method *</label>
+                    <select
+                      className="form-select mb-3"
+                      value={retailForm.paymentMethodId}
+                      required
+                      onChange={(event) => setRetailForm((previous) => ({
+                        ...previous, paymentMethodId: event.target.value,
+                      }))}
+                    >
+                      <option value="">Select payment method</option>
+                      {paymentMethods.map((method) => (
+                        <option key={method.id} value={method.id}>
+                          {method.name}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="d-flex flex-wrap gap-3 mb-3">
+                      {[["FULL", "Pay in full"], ["PARTIAL", "Partial payment"]].map(
+                        ([value, label]) => (
+                          <label key={value} className="form-check">
+                            <input
+                              type="radio"
+                              className="form-check-input"
+                              name="checkout-amount-mode"
+                              checked={retailForm.checkoutPaymentType === value}
+                              onChange={() => setRetailForm((previous) => ({
+                                ...previous, checkoutPaymentType: value,
+                              }))}
+                            />
+                            <span className="form-check-label">{label}</span>
+                          </label>
+                        )
+                      )}
+                    </div>
+                    {retailForm.checkoutPaymentType === "PARTIAL" && (
+                      <div className="mb-3">
+                        <label className="form-label fw-semibold">Amount received *</label>
+                        <input
+                          type="number"
+                          className="form-control"
+                          min="0.01"
+                          step="0.01"
+                          max={retailTotal > 0 ? retailTotal : undefined}
+                          required
+                          value={retailForm.checkoutAmount}
+                          onChange={(event) => setRetailForm((previous) => ({
+                            ...previous, checkoutAmount: event.target.value,
+                          }))}
+                        />
+                      </div>
+                    )}
+                    <label className="form-label fw-semibold">Transaction reference (optional)</label>
+                    <input
+                      className="form-control mb-3"
+                      placeholder="Receipt / transaction ID"
+                      value={retailForm.transactionRef}
+                      onChange={(event) => setRetailForm((previous) => ({
+                        ...previous, transactionRef: event.target.value,
+                      }))}
+                    />
+                    <label className="form-label fw-semibold">Payment notes (optional)</label>
+                    <textarea
+                      rows="2"
+                      className="form-control"
+                      value={retailForm.paymentNotes}
+                      onChange={(event) => setRetailForm((previous) => ({
+                        ...previous, paymentNotes: event.target.value,
+                      }))}
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="col-lg-5">
@@ -2915,6 +3276,25 @@ useEffect(() => {
                     )}
                     bold
                   />
+                  {retailForm.saleMode === "CHECKOUT" && (
+                    <>
+                      <hr />
+                      <TotalRow
+                        label="Amount to record"
+                        value={money(retailForm.checkoutPaymentType === "FULL"
+                          ? retailTotal
+                          : Number(retailForm.checkoutAmount || 0))}
+                      />
+                      <TotalRow
+                        label="Estimated remaining"
+                        value={money(Math.max(0, retailTotal - (
+                          retailForm.checkoutPaymentType === "FULL"
+                            ? retailTotal
+                            : Number(retailForm.checkoutAmount || 0)
+                        )))}
+                      />
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -2922,9 +3302,11 @@ useEffect(() => {
             <ModalActions
               saving={saving}
               submitLabel={
-                retailForm.issueImmediately
-                  ? "Create and issue invoice"
-                  : "Create draft invoice"
+                retailForm.saleMode === "CHECKOUT"
+                  ? "Complete checkout & record payment"
+                  : retailForm.saleMode === "ISSUE"
+                    ? "Create and issue invoice"
+                    : "Create draft invoice"
               }
               onCancel={() =>
                 setShowRetailModal(false)
@@ -2978,7 +3360,7 @@ useEffect(() => {
           addItemsLines={addItemsLines}
           inventoryItems={inventoryItems}
           inventorySearch={inventorySearch}
-          pets={pets}
+          pets={selectedInvoicePets}
           onInventorySearch={setInventorySearch}
           onToggleInlineItems={() => {
             if (showInlineItems) {

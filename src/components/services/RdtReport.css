@@ -1,0 +1,80 @@
+/* RDT tab integrates with the existing prescription page and Bootstrap layout. */
+.rdt-section {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 24px;
+}
+.rdt-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.rdt-icon { width: 42px; height: 42px; min-width: 42px; display: grid; place-items: center; color: #2563eb; background: #eff6ff; border-radius: 11px; }
+.rdt-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.rdt-fields { margin-top: 20px; }
+.rdt-stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0; }
+.rdt-stats span { border-radius: 999px; background: #f8fafc; border: 1px solid #e2e8f0; padding: 6px 12px; font-size: 13px; color: #334155; }
+.rdt-test-group { margin: 20px 0; overflow: hidden; border: 1px solid #e2e8f0; border-radius: 12px; }
+.rdt-group-title { background: #f8fafc; color: #0f172a; font-size: 14px; padding: 13px 16px; margin: 0; border-bottom: 1px solid #e2e8f0; font-weight: 700; }
+.rdt-table { margin-bottom: 0; }
+.rdt-table thead th { background: #fff; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: .04em; padding: 13px 15px; }
+.rdt-table td { padding: 12px 15px; font-size: 14px; vertical-align: middle; }
+.rdt-result { font-weight: 700; }
+.rdt-positive { color: #b91c1c; background-color: #fef2f2; }
+.rdt-negative { color: #166534; background-color: #f0fdf4; }
+.rdt-invalid, .rdt-inconclusive { color: #92400e; background-color: #fffbeb; }
+.rdt-print-meta { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 12px; font-size: 12px; }
+.print-rdt-report { display: none; }
+@media (max-width: 700px) {
+  .rdt-section { padding: 16px; }
+  .rdt-header { flex-direction: column; }
+  .rdt-actions { width: 100%; }
+  .rdt-actions button { flex: 1; justify-content: center; }
+  .rdt-table { min-width: 620px; }
+}
+
+@media print {
+  /* Prescription print mode: print only the existing prescription document. */
+  .print-rdt-report { display: none !important; }
+
+  /* Dedicated RDT report print mode. */
+  body.rdt-print-mode .print-prescription,
+  body.rdt-print-mode .prescription-page > :not(.print-rdt-report) {
+    display: none !important;
+  }
+  body.rdt-print-mode .print-rdt-report,
+  body.rdt-print-mode .print-rdt-report * {
+    visibility: visible !important;
+  }
+  body.rdt-print-mode .print-rdt-report {
+    display: block !important;
+    position: static !important;
+    visibility: visible !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    color: #111;
+    font-size: 12px;
+  }
+  body.rdt-print-mode .print-rdt-letterhead { text-align: center; border-bottom: 2px solid #222; padding-bottom: 13px; margin-bottom: 20px; }
+  body.rdt-print-mode .print-rdt-letterhead h1 { font-size: 25px; letter-spacing: .7px; margin: 0 0 6px; text-transform: uppercase; }
+  body.rdt-print-mode .print-rdt-letterhead p { font-size: 15px; font-weight: 700; margin: 0 0 3px; }
+  body.rdt-print-mode .print-rdt-report h2 { margin: 0 0 20px; font-size: 17px; text-align: center; }
+  body.rdt-print-mode .print-rdt-patient-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin-bottom: 18px; border: 1px solid #444; }
+  body.rdt-print-mode .print-rdt-patient-grid span { padding: 9px; border-bottom: 1px solid #ccc; }
+  body.rdt-print-mode .print-rdt-patient-grid span:nth-last-child(-n+2) { border-bottom: none; }
+  body.rdt-print-mode .print-rdt-sample { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 22px; }
+  body.rdt-print-mode .print-rdt-report h3 { font-size: 15px; margin: 0 0 9px; }
+  body.rdt-print-mode .print-rdt-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  body.rdt-print-mode .print-rdt-table th, body.rdt-print-mode .print-rdt-table td { text-align: left; border: 1px solid #444; padding: 12px 10px; }
+  body.rdt-print-mode .print-rdt-table th { background: #f0f0f0 !important; }
+  body.rdt-print-mode .print-rdt-notes { margin-top: 16px; }
+  body.rdt-print-mode .print-rdt-notes p { white-space: pre-wrap; margin-top: 5px; }
+  body.rdt-print-mode .print-rdt-signatures { display: flex; justify-content: space-between; margin-top: 68px; }
+  body.rdt-print-mode .print-rdt-signatures > div { width: 43%; display: flex; flex-direction: column; gap: 5px; }
+  body.rdt-print-mode .print-rdt-sign-line { border-top: 1px dashed #555; }
+  body.rdt-print-mode .print-rdt-signatures small { font-size: 11px; }
+  body.rdt-print-mode .print-rdt-disclaimer { margin-top: 30px; font-size: 10px; color: #444; }
+  body.rdt-print-mode .print-rdt-report table tr { break-inside: avoid; }
+  @page { size: A4; margin: 15mm; }
+}
