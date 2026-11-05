@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Bell,
   CalendarDays,
-  CheckCheck,
-  Clock3,
   ContactRound,
   Menu,
   Package,
@@ -54,37 +51,6 @@ const INITIAL_NOTIFICATIONS = [
     time: "Yesterday",
     type: "payment",
     read: true,
-  },
-];
-
-const RECENT_ACTIVITIES = [
-  {
-    id: 1,
-    title: "Patient record updated",
-    description: "Medical record updated for Max.",
-    time: "10 min ago",
-    icon: PawPrint,
-  },
-  {
-    id: 2,
-    title: "Appointment completed",
-    description: "General checkup for Bella was completed.",
-    time: "45 min ago",
-    icon: CalendarDays,
-  },
-  {
-    id: 3,
-    title: "New owner added",
-    description: "A new pet owner was registered.",
-    time: "2 hours ago",
-    icon: ContactRound,
-  },
-  {
-    id: 4,
-    title: "Stock adjusted",
-    description: "Inventory quantity was updated.",
-    time: "Yesterday",
-    icon: Package,
   },
 ];
 
@@ -168,12 +134,7 @@ function Header({ onMenuClick }) {
   const printMenuRef = useRef(null);
   const [consentPreview, setConsentPreview] = useState(null);
 
-  const unreadCount = notifications.filter(
-    (notification) => !notification.read
-  ).length;
-
   useEffect(() => {
-    function handleOutsideClick(event) {
       const clickedInsideNotification =
         notificationRef.current?.contains(event.target);
       const clickedInsideActivity =
@@ -210,35 +171,6 @@ function Header({ onMenuClick }) {
 
   function toggleDropdown(name) {
     setOpenDropdown((current) => (current === name ? null : name));
-  }
-
-  function markAllAsRead() {
-    setNotifications((previous) =>
-      previous.map((notification) => ({
-        ...notification,
-        read: true,
-      }))
-    );
-  }
-
-  function openNotification(notification) {
-    setNotifications((previous) =>
-      previous.map((item) =>
-        item.id === notification.id
-          ? { ...item, read: true }
-          : item
-      )
-    );
-
-    const routes = {
-      vaccniation: "/vaccniation",
-      appointment: "/appointments",
-      inventory: "/inventory",
-      payment: "/sales",
-    };
-
-    setOpenDropdown(null);
-    navigate(routes[notification.type] || "/dashboard");
   }
 
   function openQuickAction(action) {
@@ -644,22 +576,6 @@ function Header({ onMenuClick }) {
     )}
     </>
   );
-}
-
-function NotificationIcon({ type }) {
-  if (type === "vaccination") {
-    return <Syringe size={18} />;
-  }
-
-  if (type === "appointment") {
-    return <CalendarDays size={18} />;
-  }
-
-  if (type === "inventory") {
-    return <Package size={18} />;
-  }
-
-  return <ReceiptText size={18} />;
 }
 
 

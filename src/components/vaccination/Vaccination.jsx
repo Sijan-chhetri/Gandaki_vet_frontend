@@ -8,7 +8,6 @@ import {
   Clock3,
   Download,
   Edit3,
-  Eye,
   Filter,
   LoaderCircle,
   PawPrint,
@@ -182,14 +181,14 @@ function Vaccination() {
   useEffect(() => {
     const timer = window.setTimeout(() => reload(1), 300);
     return () => window.clearTimeout(timer);
-  }, [searchTerm, statusFilter, dateFrom, dateTo]);
+  }, [searchTerm, statusFilter, dateFrom, dateTo, reload]);
 
   useEffect(() => {
     if (location.state?.action === "add") {
       openAddForm();
       navigate(location.pathname, { replace: true, state: null });
     }
-  }, [location.state]);
+  }, [location.state, location.pathname, navigate, openAddForm]);
 
   useEffect(() => {
     if (!showForm) return;
@@ -244,14 +243,14 @@ function Vaccination() {
     [vaccinations],
   );
 
-  function openAddForm() {
+  const openAddForm = useCallback(function openAddForm() {
     setEditingId(null);
     setFormData(createEmptyForm());
     setPetSearch("");
     setVaccineSearch("");
     setFormError("");
     setShowForm(true);
-  }
+  }, []);
 
   function openEditForm(item) {
     setEditingId(item.id);
