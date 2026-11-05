@@ -178,6 +178,15 @@ function Vaccination() {
     [loadVaccinations, loadStats, pagination.page],
   );
 
+  const openAddForm = useCallback(function openAddForm() {
+    setEditingId(null);
+    setFormData(createEmptyForm());
+    setPetSearch("");
+    setVaccineSearch("");
+    setFormError("");
+    setShowForm(true);
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => reload(1), 300);
     return () => window.clearTimeout(timer);
@@ -242,15 +251,6 @@ function Vaccination() {
         .slice(0, 5),
     [vaccinations],
   );
-
-  const openAddForm = useCallback(function openAddForm() {
-    setEditingId(null);
-    setFormData(createEmptyForm());
-    setPetSearch("");
-    setVaccineSearch("");
-    setFormError("");
-    setShowForm(true);
-  }, []);
 
   function openEditForm(item) {
     setEditingId(item.id);

@@ -22,7 +22,6 @@ import {
   Trash2,
   UserRound,
   Users,
-  X,
 } from "lucide-react";
 
 import {
@@ -355,6 +354,24 @@ export default function StaffList() {
     return () => window.clearTimeout(timer);
   }, [loadStaff]);
 
+  // ===================================================
+  // OPEN ADD FORM
+  // ===================================================
+
+  const openAddForm = useCallback(function openAddForm() {
+    setEditingUserId(null);
+
+    setFormData({
+      ...EMPTY_FORM,
+      branchIds: [],
+    });
+
+    setFormError("");
+    setShowForm(true);
+
+    loadBranches();
+  }, []);
+
   useEffect(() => {
     if (location.state?.action !== "add") {
       return;
@@ -366,7 +383,7 @@ export default function StaffList() {
       replace: true,
       state: null,
     });
-  }, [location.pathname, location.state, navigate]);
+  }, [location.pathname, location.state, navigate, openAddForm]);
 
   // ===================================================
   // STATISTICS
@@ -459,24 +476,6 @@ export default function StaffList() {
     }));
 
     setFormError("");
-  }
-
-  // ===================================================
-  // OPEN ADD FORM
-  // ===================================================
-
-  function openAddForm() {
-    setEditingUserId(null);
-
-    setFormData({
-      ...EMPTY_FORM,
-      branchIds: [],
-    });
-
-    setFormError("");
-    setShowForm(true);
-
-    loadBranches();
   }
 
   // ===================================================

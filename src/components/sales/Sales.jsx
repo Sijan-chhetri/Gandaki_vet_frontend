@@ -8,7 +8,6 @@ import {
 import {
   AlertTriangle,
   Banknote,
-  CalendarDays,
   CheckCircle2,
   Download,
   Eye,
@@ -23,11 +22,9 @@ import {
   ReceiptText,
   RefreshCw,
   Search,
-  ShieldAlert,
   Trash2,
   Undo2,
   WalletCards,
-  X,
 } from "lucide-react";
 
 import invoiceService from "../../services/invoices.service.js";
@@ -524,6 +521,7 @@ function Sales() {
     filters.status,
     filters.dateFrom,
     filters.dateTo,
+    reload,
   ]);
 
   // Branch choices are required by the branch-scoped invoice backend.
@@ -651,10 +649,13 @@ function Sales() {
     };
   }, [
     showRetailModal,
+    addItemsInvoice,
     addItemsInvoice?.id,
     addItemsInvoice?.branchId,
+    addItemsLines,
     inventorySearch,
     retailForm.branchId,
+    retailForm.items,
   ]);
 
   useEffect(() => {
@@ -5308,25 +5309,6 @@ function SummaryCard({
           >
             <Icon size={21} />
           </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DetailCard({
-  label,
-  value,
-}) {
-  return (
-    <div className="col-sm-6 col-xl-3">
-      <div className="border rounded-4 p-3 h-100">
-        <small className="text-secondary">
-          {label}
-        </small>
-
-        <div className="fw-semibold mt-1">
-          {value}
         </div>
       </div>
     </div>
