@@ -26,6 +26,8 @@ import PrescriptionForm from "./components/prescriptions/PrescriptionForm"
 import Branches from "./components/branch/Branches";
 import Attendance from "./components/attendance/Attendance";
 import Login from "./auth/Login";
+import Referral from "./components/referal/Referral";
+import Loyalty from "./components/loyality/Loyalty";
 
 /* -------------------------------------------------------------------------- */
 /*                                  Roles                                     */
@@ -116,6 +118,9 @@ function App() {
   return (
     <Routes>
       {/* ================= PUBLIC ================= */}
+
+
+      
 
       <Route
         path="/login"
@@ -212,6 +217,12 @@ function App() {
             />
           </Route>
 
+
+          
+
+
+         
+
           {/* Prescription */}
 
           <Route
@@ -223,6 +234,15 @@ function App() {
               />
             }
           >
+
+
+            
+
+
+
+
+
+
             <Route
               path="prescriptions/new/:appointmentId"
               element={
@@ -328,7 +348,7 @@ function App() {
             }
           >
             <Route
-              path="event"
+              path="events"
               element={<Events />}
             />
           </Route>
@@ -391,6 +411,20 @@ function App() {
             element={
               <CustomerSupport />
             }
+          />
+
+          {/* Referrals */}
+
+          <Route
+            path="referrals"
+            element={<Referral />}
+          />
+
+          {/* Loyalty */}
+
+          <Route
+            path="loyalty"
+            element={<Loyalty />}
           />
         </Route>
       </Route>
